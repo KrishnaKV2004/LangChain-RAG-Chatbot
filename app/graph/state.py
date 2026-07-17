@@ -1,0 +1,43 @@
+"""LangGraph state definition.
+
+One :class:`AgentState` dictionary flows through every node. Nodes read what
+they need and return only the keys they update (LangGraph merges partial
+updates into the state).
+"""
+
+from typing import Dict, List, Optional, TypedDict
+
+from langchain_core.documents import Document
+
+from app.chains.citations import Citations
+from app.security.models import UserContext
+
+
+class AgentState(TypedDict, total=False):
+    """Everything the workflow knows about one request."""
+
+    # ---- Input ---------------------------------------------------------- #
+    query: str
+    history: List[Dict[str, str]]
+    user: UserContext
+
+    # ---- Routing / security gate ---------------------------------------- #
+    route: str                    # Route enum value
+    blocked: bool                 # set by the input gate or response validator
+    refusal: Optional[str]        # message to return when blocked
+
+    # ---- Retrieved context ------------------------------------------------ #
+    internal_docs: List[Document]     # after security filtering
+    web_docs: List[Document]          # web results as Documents
+    denied_texts: List[str]           # for Layer 4's leak check
+    dropped_injected: int
+    denied_by_permission: int
+    web_cache_hit: bool
+
+    # ---- Output ------------------------------------------------------------ #
+    answer: str
+    citations: Citations
+    token_usage: Dict[str, int]
+
+    # ---- Observability ------------------------------------------------------ #
+    metrics: Dict[str, float]     # per-stage latency in ms

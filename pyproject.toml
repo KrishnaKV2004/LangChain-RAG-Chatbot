@@ -1,0 +1,25 @@
+[project]
+name = "hybrid-rag-agent"
+version = "1.0.0"
+description = "Enterprise Hybrid RAG AI Agent (LangChain + LangGraph + ChromaDB + FastAPI + Streamlit)"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "integration: tests that exercise multiple components together",
+]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "N", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+disallow_untyped_defs = true
