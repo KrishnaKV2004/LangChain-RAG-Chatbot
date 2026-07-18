@@ -13,11 +13,9 @@ from api_client import APIError, RAGAPIClient
 from ui_components import (
     current_messages,
     init_state,
-    render_assistant_extras,
     set_title_from,
     sidebar_conversations,
     sidebar_documents,
-    sidebar_search_mode,
     sidebar_stats,
 )
 
@@ -41,7 +39,6 @@ def main() -> None:
     # ---- Sidebar --------------------------------------------------------- #
     st.sidebar.title("🚚 Hybrid RAG")
     sidebar_conversations()
-    force_route = sidebar_search_mode()
     sidebar_documents(client)
     sidebar_stats(client)
 
@@ -56,8 +53,6 @@ def main() -> None:
     for message in messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            if message["role"] == "assistant" and message.get("meta"):
-                render_assistant_extras(message["meta"])
 
     prompt = st.chat_input("Ask a question…")
     if not prompt:
@@ -74,7 +69,7 @@ def main() -> None:
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             try:
-                response = client.chat(prompt, history=history, force_route=force_route)
+                response = client.chat(prompt, history=history)
             except APIError as exc:
                 error_text = f"⚠️ {exc}"
                 st.error(error_text)
@@ -82,11 +77,8 @@ def main() -> None:
                 return
 
         st.markdown(response["answer"])
-        render_assistant_extras(response)
 
-    messages.append(
-        {"role": "assistant", "content": response["answer"], "meta": response}
-    )
+    messages.append({"role": "assistant", "content": response["answer"]})
 
 
 main()

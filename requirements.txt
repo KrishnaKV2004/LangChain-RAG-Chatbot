@@ -1,10 +1,62 @@
-# Development & testing dependencies
--r requirements.txt
+# ---------------------------------------------------------------------------
+# Hybrid RAG AI Agent — runtime dependencies
+# Python 3.10+ recommended (code is 3.9-compatible).
+# Install:  pip install -r requirements.txt
+# ---------------------------------------------------------------------------
 
-pytest>=8.3
-pytest-asyncio>=0.25
-pytest-mock>=3.14
-pytest-cov>=6.0
-respx>=0.22          # httpx mocking for web-search integration tests
-ruff>=0.9            # linting + formatting (PEP8)
-mypy>=1.14           # static type checking
+# Core framework
+langchain>=0.3.18,<0.4
+langchain-core>=0.3.34,<0.4
+langchain-community>=0.3.17,<0.4
+langchain-text-splitters>=0.3.6,<0.4
+langgraph>=0.2.70,<0.4
+
+# LLM + embedding providers (OpenAI-compatible; others optional below)
+langchain-openai>=0.3.4,<0.4
+
+# Vector database
+chromadb>=0.5.20,<0.7
+langchain-chroma>=0.2.2,<0.3
+
+# Web search
+tavily-python>=0.5.0
+
+# API server
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart>=0.0.18        # file uploads for /upload
+
+# Frontend
+streamlit>=1.42
+
+# Configuration & validation
+pydantic>=2.10,<3
+pydantic-settings>=2.7,<3
+python-dotenv>=1.0
+
+# Structured logging
+structlog>=24.4
+
+# Document loaders
+pypdf>=5.3                      # PDF
+python-docx>=1.1                # DOCX
+openpyxl>=3.1                   # Excel
+python-pptx>=1.0                # PowerPoint
+beautifulsoup4>=4.12            # HTML
+lxml>=5.3                       # fast HTML/XML parser backend
+pandas>=2.2                     # CSV/Excel tabular handling
+
+# Reranking + local embeddings (cross-encoder; also enables the
+# sentence_transformers embedding provider)
+sentence-transformers>=3.3
+
+# HTTP + resilience
+httpx>=0.28
+tenacity>=9.0
+
+# ---------------------------------------------------------------------------
+# Optional embedding providers — uncomment the one you configure:
+# langchain-voyageai>=0.1.4     # EMBEDDING__PROVIDER=voyage
+# langchain-cohere>=0.4         # EMBEDDING__PROVIDER=cohere
+# langchain-anthropic>=0.3      # LLM__PROVIDER=anthropic
+# ---------------------------------------------------------------------------

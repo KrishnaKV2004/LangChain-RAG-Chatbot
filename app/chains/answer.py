@@ -3,8 +3,14 @@
 Assembles the message list (system prompt with data-wrapped context →
 conversation history → current question), invokes the LLM, and reports token
 usage alongside the text.
+
+The model is instructed to deliberate inside ``<thinking>`` tags and put the
+user-facing reply inside ``<answer>`` tags; only the answer is returned.
+This keeps chain-of-thought rambling ("...actually, a better answer is...")
+structurally out of the response instead of relying on the model's restraint.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -21,6 +27,24 @@ logger = get_logger(__name__)
 
 #: History beyond this many messages is dropped (oldest first) to bound cost.
 _MAX_HISTORY_MESSAGES = 10
+
+_ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.S | re.I)
+# Matches a thinking block even when truncation cut off its closing tag.
+_THINKING_RE = re.compile(r"<thinking>.*?(?:</thinking>|$)", re.S | re.I)
+
+
+def extract_final_answer(text: str) -> str:
+    """Return only the user-facing part of the model's output.
+
+    Preference order: the ``<answer>`` block; otherwise the text with any
+    thinking block removed; otherwise (nothing left) the raw text — a model
+    that ignored the tag protocol entirely must still produce a reply.
+    """
+    match = _ANSWER_RE.search(text)
+    if match:
+        return match.group(1).strip()
+    stripped = _THINKING_RE.sub("", text).replace("<answer>", "").strip()
+    return stripped or text.strip()
 
 
 @dataclass
@@ -57,7 +81,7 @@ class AnswerChain:
 
         usage = getattr(response, "usage_metadata", None) or {}
         result = GenerationResult(
-            answer=str(response.content).strip(),
+            answer=extract_final_answer(str(response.content)),
             latency_ms=timer.elapsed_ms,
             token_usage={
                 "input_tokens": usage.get("input_tokens", 0),

@@ -11,23 +11,6 @@ import streamlit as st
 
 from api_client import APIError, RAGAPIClient
 
-#: Sidebar search-mode label → API force_route value (None = automatic).
-SEARCH_MODES = {
-    "Auto (LLM router)": None,
-    "Internal documents": "INTERNAL_ONLY",
-    "Web search": "WEB_ONLY",
-    "Hybrid": "HYBRID",
-    "Chat only": "GENERAL_CHAT",
-}
-
-_ROUTE_BADGES = {
-    "INTERNAL_ONLY": "📄 internal",
-    "WEB_ONLY": "🌐 web",
-    "HYBRID": "🔀 hybrid",
-    "GENERAL_CHAT": "💬 chat",
-}
-
-
 # --------------------------------------------------------------------------- #
 # Session-state conversation store
 # --------------------------------------------------------------------------- #
@@ -73,17 +56,6 @@ def sidebar_conversations() -> None:
         if st.sidebar.button(label, key=f"conv-{conversation_id}", use_container_width=True):
             st.session_state.current_id = conversation_id
             st.rerun()
-
-
-def sidebar_search_mode() -> str:
-    st.sidebar.divider()
-    st.sidebar.subheader("Search mode")
-    label = st.sidebar.radio(
-        "Where to look for answers",
-        list(SEARCH_MODES),
-        label_visibility="collapsed",
-    )
-    return SEARCH_MODES[label]
 
 
 def sidebar_documents(client: RAGAPIClient) -> None:
@@ -136,38 +108,3 @@ def sidebar_stats(client: RAGAPIClient) -> None:
         st.sidebar.warning("Backend offline — start the API first.")
 
 
-# --------------------------------------------------------------------------- #
-# Chat rendering
-# --------------------------------------------------------------------------- #
-
-
-def render_assistant_extras(meta: Dict[str, Any]) -> None:
-    """Citations, retrieved chunks and performance details for one answer."""
-    citations = meta.get("citations", {})
-    internal = citations.get("internal", [])
-    external = citations.get("external", [])
-    if internal or external:
-        st.markdown("**Sources**")
-        for label in internal:
-            st.markdown(f"- 📄 {label}")
-        for source in external:
-            st.markdown(f"- 🌐 [{source['title']}]({source['url']})")
-
-    chunks = meta.get("retrieved_chunks", [])
-    if chunks:
-        with st.expander(f"Retrieved chunks ({len(chunks)})"):
-            for chunk in chunks:
-                provenance = chunk.get("filename") or "unknown"
-                if chunk.get("page"):
-                    provenance += f", page {chunk['page']}"
-                if chunk.get("section_title"):
-                    provenance += f" — {chunk['section_title']}"
-                st.markdown(f"**{provenance}**")
-                st.text(chunk.get("text", ""))
-                st.divider()
-
-    badge = _ROUTE_BADGES.get(meta.get("route", ""), meta.get("route", ""))
-    tokens = meta.get("token_usage", {}).get("total_tokens", 0)
-    latency = meta.get("total_latency_ms", 0)
-    cache_note = " · cache hit" if meta.get("web_cache_hit") else ""
-    st.caption(f"{badge} · {latency:.0f} ms · {tokens} tokens{cache_note}")

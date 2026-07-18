@@ -172,3 +172,39 @@ class TestCitationBuilder:
 
     def test_empty_context_yields_empty_citations(self) -> None:
         assert CitationBuilder().build([], []).is_empty
+
+
+class TestAnswerExtraction:
+    """Only the <answer> block reaches the user; deliberation stays hidden."""
+
+    def test_answer_block_is_extracted(self) -> None:
+        from app.chains.answer import extract_final_answer
+
+        raw = (
+            "<thinking>SLC? no... LAX is in California, much closer.</thinking>\n"
+            "<answer>The closest listed airport to SFO is LAX.</answer>"
+        )
+        assert extract_final_answer(raw) == "The closest listed airport to SFO is LAX."
+
+    def test_thinking_stripped_when_answer_tag_missing(self) -> None:
+        from app.chains.answer import extract_final_answer
+
+        raw = "<thinking>weighing options...</thinking>The answer is DEN."
+        assert extract_final_answer(raw) == "The answer is DEN."
+
+    def test_truncated_thinking_does_not_leak(self) -> None:
+        from app.chains.answer import extract_final_answer
+
+        raw = "Final: LAX.<thinking>unfinished deliberation that got cut off"
+        assert extract_final_answer(raw) == "Final: LAX."
+
+    def test_untagged_reply_passes_through(self) -> None:
+        from app.chains.answer import extract_final_answer
+
+        assert extract_final_answer("Plain reply.") == "Plain reply."
+
+    def test_chain_returns_extracted_answer(self) -> None:
+        chain = AnswerChain(
+            scripted("<thinking>hmm, alternatives...</thinking><answer>LAX.</answer>")
+        )
+        assert chain.generate(query="closest to SFO?").answer == "LAX."

@@ -1,0 +1,10 @@
+# Development & testing dependencies
+-r requirements.txt
+
+pytest>=8.3
+pytest-asyncio>=0.25
+pytest-mock>=3.14
+pytest-cov>=6.0
+respx>=0.22          # httpx mocking for web-search integration tests
+ruff>=0.9            # linting + formatting (PEP8)
+mypy>=1.14           # static type checking
