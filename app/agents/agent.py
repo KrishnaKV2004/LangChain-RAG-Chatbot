@@ -10,6 +10,7 @@ fakes.
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from app.agents.hermes import HermesRefiner
 from app.cache.ttl_cache import TTLCache
 from app.chains.answer import AnswerChain
 from app.chains.citations import CitationBuilder, Citations
@@ -155,7 +156,12 @@ def create_agent(settings: Settings) -> HybridRAGAgent:
 
     # ---- LLM chains --------------------------------------------------------- #
     router = QueryRouter(create_chat_model(settings, role="router"))
-    answer_chain = AnswerChain(create_chat_model(settings, role="answer"))
+    answer_llm = create_chat_model(settings, role="answer")
+    answer_chain = AnswerChain(answer_llm)
+    # Hermes reviews drafts with the same model tier the answers use.
+    refiner = (
+        HermesRefiner(answer_llm, settings.hermes) if settings.hermes.enabled else None
+    )
 
     # ---- Ingestion (Layer-2 tagging happens before chunks are stored) ------ #
     ingestion = IngestionService(settings.chunking)
@@ -167,7 +173,9 @@ def create_agent(settings: Settings) -> HybridRAGAgent:
     )
 
     # ---- Workflow ------------------------------------------------------------ #
-    nodes = GraphNodes(router, retrieval, web_search, guard, answer_chain, CitationBuilder())
+    nodes = GraphNodes(
+        router, retrieval, web_search, guard, answer_chain, CitationBuilder(), refiner
+    )
     workflow = build_workflow(nodes)
 
     logger.info("agent_ready", environment=settings.environment)

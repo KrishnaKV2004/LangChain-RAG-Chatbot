@@ -23,6 +23,9 @@ Built with **LangChain · LangGraph · FastAPI · Streamlit · ChromaDB**.
 - **Five security layers** — prompt-injection detection (direct and
   indirect), sensitive-document detection, role-based permission validation,
   response leak scanning, PII redaction. See [docs/security.md](docs/security.md).
+- **Hermes self-refinement** — a reviewer agent grades every draft answer
+  (one committed answer, faithful to context, human tone, concise) and
+  rewrites it when it falls short, before the security gate.
 - **Grounded citations** — built programmatically from the exact sources in
   the LLM's context; fabrication is structurally impossible.
 - **Observability** — structured logs (console or JSON) with per-stage

@@ -10,10 +10,11 @@ Node map (see ``workflow.py`` for the edges):
               → generate → build_citations → validate_response
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from langchain_core.documents import Document
 
+from app.agents.hermes import HermesRefiner
 from app.chains.answer import AnswerChain
 from app.chains.citations import CitationBuilder, Citations
 from app.graph.state import AgentState
@@ -47,6 +48,7 @@ class GraphNodes:
         guard: SecurityGuard,
         answer_chain: AnswerChain,
         citation_builder: CitationBuilder,
+        refiner: Optional[HermesRefiner] = None,
     ) -> None:
         self._router = router
         self._retrieval = retrieval
@@ -54,6 +56,7 @@ class GraphNodes:
         self._guard = guard
         self._answer_chain = answer_chain
         self._citations = citation_builder
+        self._refiner = refiner
 
     # ------------------------------------------------------------------ #
     # 1. Input gate — security checkpoint 1
@@ -171,7 +174,29 @@ class GraphNodes:
         }
 
     # ------------------------------------------------------------------ #
-    # 7. Citation builder — from the exact documents the LLM saw
+    # 7. Hermes refinement — self-improve the draft before it ships
+    # ------------------------------------------------------------------ #
+
+    def refine(self, state: AgentState) -> Dict[str, Any]:
+        if self._refiner is None:
+            return {}
+        result = self._refiner.refine(
+            query=state["query"],
+            draft=state.get("answer", ""),
+            internal_docs=state.get("internal_docs", []),
+            web_docs=state.get("web_docs", []),
+        )
+        # Hermes tokens count toward the turn's total.
+        usage = dict(state.get("token_usage", {}))
+        for key, value in result.token_usage.items():
+            usage[key] = usage.get(key, 0) + value
+
+        metrics = _metrics(state, "refinement_ms", result.latency_ms)
+        metrics["refinement_iterations"] = float(result.iterations)
+        return {"answer": result.answer, "token_usage": usage, "metrics": metrics}
+
+    # ------------------------------------------------------------------ #
+    # 8. Citation builder — from the exact documents the LLM saw
     # ------------------------------------------------------------------ #
 
     def build_citations(self, state: AgentState) -> Dict[str, Any]:
@@ -181,7 +206,7 @@ class GraphNodes:
         return {"citations": citations}
 
     # ------------------------------------------------------------------ #
-    # 8. Response validation — security checkpoint 3 (Layers 4+5)
+    # 9. Response validation — security checkpoint 3 (Layers 4+5)
     # ------------------------------------------------------------------ #
 
     def validate_response(self, state: AgentState) -> Dict[str, Any]:

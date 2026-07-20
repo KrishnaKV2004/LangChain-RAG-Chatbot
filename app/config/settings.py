@@ -171,6 +171,16 @@ class CacheSettings(BaseModel):
     default_ttl_seconds: int = Field(default=86_400, gt=0)
 
 
+class HermesSettings(BaseModel):
+    """Hermes — the self-refinement agent that reviews and improves draft
+    answers (quality, faithfulness, human tone) before they leave the system."""
+
+    enabled: bool = True
+    # Review/revise passes per answer. Each pass costs one extra LLM call
+    # only when the draft actually needs improvement.
+    max_iterations: int = Field(default=2, ge=1, le=3)
+
+
 class SecuritySettings(BaseModel):
     """Toggles and thresholds for the five security layers."""
 
@@ -249,6 +259,7 @@ class Settings(BaseSettings):
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
+    hermes: HermesSettings = Field(default_factory=HermesSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     api: APISettings = Field(default_factory=APISettings)
     paths: PathSettings = Field(default_factory=PathSettings)

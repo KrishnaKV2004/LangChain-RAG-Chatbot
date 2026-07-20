@@ -30,6 +30,7 @@ def build_workflow(nodes: GraphNodes):
     graph.add_node("web_search", nodes.web_search)
     graph.add_node("merge_context", nodes.merge_context)
     graph.add_node("generate", nodes.generate)
+    graph.add_node("refine", nodes.refine)  # Hermes self-improvement pass
     graph.add_node("build_citations", nodes.build_citations)
     graph.add_node("validate_response", nodes.validate_response)
 
@@ -64,7 +65,9 @@ def build_workflow(nodes: GraphNodes):
 
     graph.add_edge("web_search", "merge_context")
     graph.add_edge("merge_context", "generate")
-    graph.add_edge("generate", "build_citations")
+    # Hermes reviews/improves the draft; security still validates the result.
+    graph.add_edge("generate", "refine")
+    graph.add_edge("refine", "build_citations")
     graph.add_edge("build_citations", "validate_response")
     graph.add_edge("validate_response", END)
 

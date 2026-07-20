@@ -102,6 +102,7 @@ def build_agent_workflow(
     tmp_path: Path,
     answer_reply: str = "Cargo is loaded in unit load devices.",
     web_provider: BaseSearchProvider = None,
+    refiner=None,
 ):
     retrieval = RetrievalPipeline(
         manager,
@@ -121,6 +122,7 @@ def build_agent_workflow(
         guard=guard,
         answer_chain=AnswerChain(ScriptedChatModel(responder=lambda m: answer_reply)),
         citation_builder=CitationBuilder(),
+        refiner=refiner,
     )
     return build_workflow(nodes)
 
@@ -167,6 +169,52 @@ class TestWorkflowRoutes:
         assert state["route"] == "GENERAL_CHAT"
         assert state["citations"].is_empty
         assert state["answer"] == "Here's a joke!"
+
+
+class TestHermesInWorkflow:
+    def test_refiner_improves_the_answer_in_the_graph(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        from app.agents.hermes import HermesRefiner
+        from app.config.settings import HermesSettings
+
+        # Reviewer rewrites once, then approves.
+        calls = {"n": 0}
+
+        def hermes_responder(messages) -> str:
+            calls["n"] += 1
+            return "APPROVED" if calls["n"] > 1 else "Cargo goes in ULDs on the main deck."
+
+        refiner = HermesRefiner(
+            ScriptedChatModel(responder=hermes_responder), HermesSettings(max_iterations=2)
+        )
+        workflow = build_agent_workflow(
+            manager, tmp_path,
+            answer_reply="Maybe ULDs, or possibly pallets, a better answer would be ULDs.",
+            refiner=refiner,
+        )
+        state = run(workflow, "How is air cargo loaded?")
+        assert state["answer"] == "Cargo goes in ULDs on the main deck."
+        assert state["metrics"]["refinement_iterations"] == 2.0
+        # Hermes tokens were added on top of generation tokens.
+        assert state["token_usage"]["total_tokens"] == 15 + 30
+
+    def test_refined_answer_still_passes_security_gate(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        from app.agents.hermes import HermesRefiner
+        from app.config.settings import HermesSettings
+
+        # A malicious "refinement" that injects denied confidential content
+        # must still be caught by the response gate downstream.
+        refiner = HermesRefiner(
+            ScriptedChatModel(responder=lambda m: f"Sure! {CONFIDENTIAL_TEXT}"),
+            HermesSettings(max_iterations=1),
+        )
+        workflow = build_agent_workflow(manager, tmp_path, refiner=refiner)
+        state = run(workflow, "cargo pricing contract")
+        assert state["blocked"] is True
+        assert state["answer"] == REFUSAL_MESSAGE
 
 
 class TestForcedRoute:
