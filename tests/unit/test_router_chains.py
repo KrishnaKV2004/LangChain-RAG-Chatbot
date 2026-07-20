@@ -208,3 +208,42 @@ class TestAnswerExtraction:
             scripted("<thinking>hmm, alternatives...</thinking><answer>LAX.</answer>")
         )
         assert chain.generate(query="closest to SFO?").answer == "LAX."
+
+
+class TestNonAnswerDetection:
+    """is_non_answer feeds the graph's corrective web fallback."""
+
+    def test_refusal_phrasings_detected(self) -> None:
+        from app.chains.answer import is_non_answer
+
+        for reply in (
+            "I can't tell you the exact delivery time from the information I have.",
+            "I cannot determine the closest airport from the context.",
+            "I'm unable to find that in the documents.",
+            "The documents do not contain shipping rates.",
+            "Sorry, no information is available about that lane.",
+            "",
+        ):
+            assert is_non_answer(reply), reply
+
+    def test_real_answers_pass(self) -> None:
+        from app.chains.answer import is_non_answer
+
+        for reply in (
+            "Freight from San Francisco to Denver takes 2 to 4 business days.",
+            "Denver International Airport (DEN) is the closest airport.",
+            # Long, substantive answer with an embedded hedge is NOT a refusal.
+            "The transit time is 3 days. " * 20 + "Exact times aren't guaranteed.",
+        ):
+            assert not is_non_answer(reply), reply
+
+    def test_wording_variants_detected(self) -> None:
+        from app.chains.answer import is_non_answer
+
+        for reply in (
+            "I'm sorry, but I don't have information on the exact transit time.",
+            "I am not able to answer that from the documents.",
+            "That is not specified in the available documents.",
+            "The context does not include transit times.",
+        ):
+            assert is_non_answer(reply), reply

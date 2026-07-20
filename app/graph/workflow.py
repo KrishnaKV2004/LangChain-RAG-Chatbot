@@ -15,9 +15,25 @@ Routing logic lives here as conditional edges; behaviour lives in the nodes.
 
 from langgraph.graph import END, START, StateGraph
 
+from app.chains.answer import is_non_answer
 from app.graph.nodes import GraphNodes
 from app.graph.state import AgentState
 from app.routers.classifier import Route
+
+
+def _after_refine(state: AgentState) -> str:
+    """Corrective-fallback gate: an INTERNAL_ONLY reply that admits it
+    couldn't answer gets one retry with web context before it ships.
+
+    Evaluated after Hermes so the check sees the answer in its final,
+    condensed form (a verbose draft refusal could otherwise slip past)."""
+    if (
+        state.get("route") == Route.INTERNAL_ONLY.value
+        and not state.get("web_fallback_used")
+        and is_non_answer(state.get("answer", ""))
+    ):
+        return "escalate"
+    return "citations"
 
 
 def build_workflow(nodes: GraphNodes):
@@ -30,6 +46,7 @@ def build_workflow(nodes: GraphNodes):
     graph.add_node("web_search", nodes.web_search)
     graph.add_node("merge_context", nodes.merge_context)
     graph.add_node("generate", nodes.generate)
+    graph.add_node("escalate_to_web", nodes.escalate_to_web)  # corrective fallback
     graph.add_node("refine", nodes.refine)  # Hermes self-improvement pass
     graph.add_node("build_citations", nodes.build_citations)
     graph.add_node("validate_response", nodes.validate_response)
@@ -65,9 +82,15 @@ def build_workflow(nodes: GraphNodes):
 
     graph.add_edge("web_search", "merge_context")
     graph.add_edge("merge_context", "generate")
-    # Hermes reviews/improves the draft; security still validates the result.
     graph.add_edge("generate", "refine")
-    graph.add_edge("refine", "build_citations")
+    # Corrective fallback: an internal-only "I can't answer that" loops back
+    # through web search once; everything else proceeds to citations.
+    graph.add_conditional_edges(
+        "refine",
+        _after_refine,
+        {"escalate": "escalate_to_web", "citations": "build_citations"},
+    )
+    graph.add_edge("escalate_to_web", "web_search")
     graph.add_edge("build_citations", "validate_response")
     graph.add_edge("validate_response", END)
 

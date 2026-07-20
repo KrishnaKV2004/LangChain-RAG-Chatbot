@@ -174,6 +174,24 @@ class GraphNodes:
         }
 
     # ------------------------------------------------------------------ #
+    # 6b. Corrective fallback — internal dead-end escalates to web search
+    # ------------------------------------------------------------------ #
+
+    def escalate_to_web(self, state: AgentState) -> Dict[str, Any]:
+        """An INTERNAL_ONLY answer admitted defeat: retry with web context.
+
+        The route flips to HYBRID and the flow loops back through
+        web_search → merge_context → generate. ``web_fallback_used`` makes
+        this a one-shot escalation, never an infinite loop.
+        """
+        logger.info("web_fallback_triggered", query=state["query"][:80])
+        return {
+            "route": Route.HYBRID.value,
+            "web_fallback_used": True,
+            "metrics": _metrics(state, "web_fallback", 1.0),
+        }
+
+    # ------------------------------------------------------------------ #
     # 7. Hermes refinement — self-improve the draft before it ships
     # ------------------------------------------------------------------ #
 

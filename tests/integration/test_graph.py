@@ -103,6 +103,7 @@ def build_agent_workflow(
     answer_reply: str = "Cargo is loaded in unit load devices.",
     web_provider: BaseSearchProvider = None,
     refiner=None,
+    answer_responder=None,
 ):
     retrieval = RetrievalPipeline(
         manager,
@@ -120,7 +121,9 @@ def build_agent_workflow(
         retrieval=retrieval,
         web_search=web_search,
         guard=guard,
-        answer_chain=AnswerChain(ScriptedChatModel(responder=lambda m: answer_reply)),
+        answer_chain=AnswerChain(
+            ScriptedChatModel(responder=answer_responder or (lambda m: answer_reply))
+        ),
         citation_builder=CitationBuilder(),
         refiner=refiner,
     )
@@ -169,6 +172,77 @@ class TestWorkflowRoutes:
         assert state["route"] == "GENERAL_CHAT"
         assert state["citations"].is_empty
         assert state["answer"] == "Here's a joke!"
+
+
+class TestCorrectiveFallback:
+    def test_internal_dead_end_escalates_to_web_and_answers(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        # First generation (internal-only context) admits defeat; the second
+        # one — after the fallback added web context — answers properly.
+        calls = {"n": 0}
+
+        def answer_responder(messages) -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return "I can't tell you the exact delivery time from the information I have."
+            return "Freight from San Francisco to Denver takes about 2 to 4 business days."
+
+        workflow = build_agent_workflow(
+            manager, tmp_path, answer_responder=answer_responder
+        )
+        # "cargo" routes INTERNAL_ONLY in the keyword router.
+        state = run(workflow, "How many days does cargo take from SF to Denver?")
+
+        assert state["answer"].startswith("Freight from San Francisco")
+        assert state["web_fallback_used"] is True
+        assert state["route"] == "HYBRID"  # escalated
+        assert state["metrics"]["web_fallback"] == 1.0
+        assert state["citations"].external  # web sources now cited
+        assert calls["n"] == 2
+
+    def test_fallback_fires_at_most_once(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        # The model never manages to answer; the loop must terminate after
+        # exactly one escalation and ship the honest non-answer.
+        calls = {"n": 0}
+
+        def answer_responder(messages) -> str:
+            calls["n"] += 1
+            return "I don't have that information."
+
+        workflow = build_agent_workflow(
+            manager, tmp_path, answer_responder=answer_responder
+        )
+        state = run(workflow, "cargo lane pricing for Mars shipments?")
+        assert calls["n"] == 2  # original + one retry, never more
+        assert "don't have" in state["answer"]
+
+    def test_web_route_non_answer_does_not_escalate(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        # WEB_ONLY already used the web; a non-answer there must not loop.
+        calls = {"n": 0}
+
+        def answer_responder(messages) -> str:
+            calls["n"] += 1
+            return "I can't determine that."
+
+        workflow = build_agent_workflow(
+            manager, tmp_path, answer_responder=answer_responder
+        )
+        state = run(workflow, "What is the weather on the moon?")
+        assert state["route"] == "WEB_ONLY"
+        assert calls["n"] == 1
+        assert not state.get("web_fallback_used")
+
+    def test_good_internal_answer_skips_the_fallback(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        state = run(build_agent_workflow(manager, tmp_path), "How is air cargo loaded?")
+        assert not state.get("web_fallback_used")
+        assert "web_fallback" not in state["metrics"]
 
 
 class TestHermesInWorkflow:

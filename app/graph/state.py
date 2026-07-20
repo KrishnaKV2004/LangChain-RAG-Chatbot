@@ -33,6 +33,9 @@ class AgentState(TypedDict, total=False):
     dropped_injected: int
     denied_by_permission: int
     web_cache_hit: bool
+    #: Set once the corrective fallback (internal non-answer → web retry)
+    #: has run, so the loop can never trigger twice.
+    web_fallback_used: bool
 
     # ---- Output ------------------------------------------------------------ #
     answer: str

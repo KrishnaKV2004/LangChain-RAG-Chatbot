@@ -33,6 +33,46 @@ _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.S | re.I)
 _THINKING_RE = re.compile(r"<thinking>.*?(?:</thinking>|$)", re.S | re.I)
 
 
+#: Refusal-phrasing families that mark a reply as "I couldn't answer". Used
+#: by the graph's corrective fallback: an internal-only non-answer triggers a
+#: web retry. Regexes (not fixed strings) so wording variants can't slip by.
+_NON_ANSWER_PATTERNS = (
+    re.compile(r"\bi\s+(?:can'?t|cannot|can\s+not)\b", re.I),
+    re.compile(r"\b(?:i'?m|i\s+am)\s+(?:unable|not\s+able)\b", re.I),
+    re.compile(r"\bunable\s+to\s+(?:determine|find|tell|answer|provide|locate)\b", re.I),
+    # "don't have (that/the/enough/any) information/data/details/answer"
+    re.compile(
+        r"\b(?:don'?t|do\s+not|doesn'?t|does\s+not)\s+have\b[^.!?]{0,60}"
+        r"\b(?:information|data|details?|specifics|answer)\b",
+        re.I,
+    ),
+    re.compile(r"\bno\s+(?:information|data|details?)\b", re.I),
+    re.compile(r"\b(?:information|data|details?)\s+(?:is|are)?\s*not\s+available\b", re.I),
+    re.compile(r"\bnot\s+available\s+in\s+(?:the|my|our)\b", re.I),
+    # "the documents don't contain / provide / include / specify / mention / list ..."
+    re.compile(
+        r"\b(?:don'?t|do\s+not|doesn'?t|does\s+not)\s+"
+        r"(?:contain|provide|include|specify|mention|list)\b",
+        re.I,
+    ),
+    re.compile(r"\bnot\s+(?:specified|mentioned|listed|provided)\s+in\b", re.I),
+)
+
+#: Long answers that merely *include* a hedge are real answers; genuine
+#: refusals are short (checked post-Hermes, which condenses verbose ones).
+_NON_ANSWER_MAX_CHARS = 500
+
+
+def is_non_answer(text: str) -> bool:
+    """True when the reply admits it couldn't answer the question."""
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if len(stripped) > _NON_ANSWER_MAX_CHARS:
+        return False
+    return any(pattern.search(stripped) for pattern in _NON_ANSWER_PATTERNS)
+
+
 def extract_final_answer(text: str) -> str:
     """Return only the user-facing part of the model's output.
 
