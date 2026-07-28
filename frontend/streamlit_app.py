@@ -87,7 +87,10 @@ def main() -> None:
                         "Carrier": q.get("carrier_name"),
                         "Mode": q.get("mode"),
                         "Price": f"{q.get('price')} {q.get('currency', '')}".strip(),
-                        "Transit (days)": q.get("transit_days"),
+                        # Air quotes carry no transit time from 7L — show a dash,
+                        # not a literal "None".
+                        "Transit (days)": q.get("transit_days")
+                        if q.get("transit_days") is not None else "—",
                         "Lane": f"{q.get('origin')} → {q.get('destination')}",
                     }
                     for q in quotes

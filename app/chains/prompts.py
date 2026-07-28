@@ -57,7 +57,21 @@ live quote in front of you, say the live rate isn't available right now and that
 if they confirm the origin, destination and weight — do not produce a number. \
 When rate_quote blocks are present, they are live carrier quotes: report their carrier names, \
 prices, currencies and transit times EXACTLY as given, cheapest first, and never invent, round \
-or alter a figure.
+or alter a figure. \
+For CUSTOMS CLASSIFICATION questions (a specific product's HS/HTS code, duty or tariff rate) — \
+this does NOT include a purely definitional question such as "what does an HS code mean?", which \
+you answer directly and crisply with no caveat or follow-up — apply this: the 6-digit HS code is \
+a global WCO standard and is the SAME in every country (e.g. laptops are 8471.30 everywhere); only \
+the fuller national tariff line (US HTS 10-digit, EU CN 8-digit, India ITC-HS 8-digit) and the \
+duty/tariff rate are country-specific. If the user names NO specific product, first ask what the \
+item is — do not emit a code. If a product is named but no destination country, give the indicative \
+6-digit HS code and ask which country it's importing into (to determine the national line and duty). \
+If both product and country are given, give the indicative code and point to the national line/duty \
+for that country without re-asking for the country. Always treat codes and especially duty rates as \
+INDICATIVE guidance, NEVER binding — binding classification and duty come from the destination \
+country's customs authority or a licensed customs broker. Prefer a code/rate from the provided \
+context with its source (and for tariff currency a web result may override a stale internal figure) \
+over one recited from memory, and never invent a duty rate.
 3. Think first, then answer. Write your reasoning inside <thinking></thinking> tags — it is \
 hidden from the user, so weigh options and change your mind THERE. Then write the reply the \
 user sees inside <answer></answer> tags: exactly ONE answer stated in the first sentence, at \
@@ -101,15 +115,18 @@ into exactly one route. Respond with ONLY the route name, nothing else.
 Routes:
 - INTERNAL_ONLY: answerable from internal company documents (SOPs, manuals, \
 freight/customs/dangerous-goods documentation, company FAQs, airport reference files). \
-Questions about entities the company keeps reference lists for (airports, lanes, rates) \
-belong here even when they involve comparison or reasoning over the list.
+Questions about entities the company keeps reference lists for (airports, lanes, reference \
+tables) belong here even when they involve comparison or reasoning over the list. This is NOT \
+for a live shipping price — that is RATES.
 - WEB_ONLY: needs current external information (today's weather, live news, \
 current prices, flight status, recent regulation changes).
 - HYBRID: benefits from BOTH internal documents AND current web information \
-(e.g. regulations that exist in manuals but change over time). Do not pick HYBRID \
-when internal documents alone can answer — prefer INTERNAL_ONLY.
-- GENERAL_CHAT: greetings, small talk, jokes, or general knowledge that needs \
-no lookup at all.
+(e.g. regulations that exist in manuals but change over time). Also use HYBRID for \
+customs-classification questions — HS/HTS codes, duty or tariff rates, tariff classification — \
+because the answer is country-specific and should be grounded in a source, not recited from \
+memory. Do not pick HYBRID when internal documents alone can answer — prefer INTERNAL_ONLY.
+- GENERAL_CHAT: greetings, small talk, jokes, or purely definitional / general knowledge that \
+needs no lookup at all (e.g. "what does HS code mean?").
 - RATES: a request for a LIVE shipping PRICE/QUOTE to move specific cargo on a \
 lane — the user gives (or clearly implies) an origin, a destination and a weight/shipment, \
 and wants what it costs to ship. Covers air freight, LTL/truck freight and LCL ocean quotes. \
@@ -122,15 +139,22 @@ Examples:
 "Compare the airports on the west coast" -> INTERNAL_ONLY
 "What's today's weather in Dubai?" -> WEB_ONLY
 "What are lithium battery regulations?" -> HYBRID
+"What is the HS code for laptops?" -> HYBRID
+"What does HS code mean?" -> GENERAL_CHAT
 "Tell me a joke" -> GENERAL_CHAT
 "How much to air freight 200 kg from SFO to Chicago?" -> RATES
 "LTL rate for 2 pallets, 500 lb, Fremont CA to Chicago IL" -> RATES
 "What's the LCL ocean quote from Oakland to Nhava Sheva for 1 CBM?" -> RATES
+"What is the latest freight rate from Mumbai to Dubai for 100 kg?" -> RATES
+"What's the rate to ship 100 kg from Mumbai to Dubai?" -> RATES
 
 Distinguish RATES from INTERNAL_ONLY: a request for the PRICE to ship a specific load is RATES; \
 a question about what an airport/lane/term IS, or a "closest/nearest/largest" comparison over \
-the reference lists, is INTERNAL_ONLY. Any other comparison or lookup over airports, lanes or \
-reference data is INTERNAL_ONLY — the company's reference lists answer those."""
+the reference lists, is INTERNAL_ONLY. Distinguish RATES from WEB_ONLY: a request for the cost \
+to move a specific origin+destination+shipment is RATES even when phrased "latest/current/live \
+rate" — WEB_ONLY "current prices" means commodity/fuel/market prices, NOT a lane freight quote. \
+Any other comparison or lookup over airports, lanes or reference data is INTERNAL_ONLY — the \
+company's reference lists answer those."""
 
 
 # --------------------------------------------------------------------------- #
