@@ -14,8 +14,10 @@ from app.chains.citations import CitationBuilder
 from app.chains.prompts import PROTECTED_MARKERS
 from app.config.settings import RetrievalSettings, SecuritySettings, Settings, WebSearchSettings
 from app.database.chroma import ChromaManager
+from app.chains.rate_extraction import RateExtraction
 from app.graph.nodes import GraphNodes
 from app.graph.workflow import build_workflow
+from app.rates.models import FreightItem, Location, RateMode, RateQuery, RateQuote, RateResult
 from app.retrievers.pipeline import RetrievalPipeline
 from app.routers.classifier import QueryRouter
 from app.search.base import BaseSearchProvider, SearchResult
@@ -37,6 +39,8 @@ CONFIDENTIAL_TEXT = (
 def router_responder(messages: List[BaseMessage]) -> str:
     """Keyword router standing in for the router LLM."""
     question = messages[-1].content.lower()
+    if "quote" in question:
+        return "RATES"
     if "weather" in question:
         return "WEB_ONLY"
     if "lithium" in question:
@@ -104,6 +108,8 @@ def build_agent_workflow(
     web_provider: BaseSearchProvider = None,
     refiner=None,
     answer_responder=None,
+    rate_extractor=None,
+    rate_service=None,
 ):
     retrieval = RetrievalPipeline(
         manager,
@@ -126,6 +132,8 @@ def build_agent_workflow(
         ),
         citation_builder=CitationBuilder(),
         refiner=refiner,
+        rate_extractor=rate_extractor,
+        rate_service=rate_service,
     )
     return build_workflow(nodes)
 
@@ -172,6 +180,135 @@ class TestWorkflowRoutes:
         assert state["route"] == "GENERAL_CHAT"
         assert state["citations"].is_empty
         assert state["answer"] == "Here's a joke!"
+
+
+class FakeExtractor:
+    """Stand-in for the LLM extractor; returns a scripted RateExtraction."""
+
+    def __init__(self, result: RateExtraction) -> None:
+        self._result = result
+
+    def extract(self, query, history=None) -> RateExtraction:
+        return self._result
+
+
+class FakeRateService:
+    def __init__(self, quotes) -> None:
+        self._quotes = quotes
+        self.calls = 0
+
+    def get_rates(self, query) -> RateResult:
+        self.calls += 1
+        return RateResult(quotes=list(self._quotes), cache_hit=False, latency_ms=7.0)
+
+
+def _air_query() -> RateQuery:
+    return RateQuery(mode=RateMode.AIR, origin=Location(airport="SFO"),
+                     destination=Location(airport="ORD"), items=[FreightItem(weight=200)])
+
+
+def _quote(carrier: str, price: float) -> RateQuote:
+    return RateQuote(carrier_name=carrier, carrier_code=carrier[:3].upper(),
+                     origin="SFO", destination="ORD", price=price, currency="USD",
+                     mode="air", provider="7lfreight", transit_days=3)
+
+
+class TestRatesRoute:
+    def test_rates_route_fetches_quotes_and_answers(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        service = FakeRateService([_quote("FedEx", 1200.0), _quote("UPS", 1500.0)])
+        workflow = build_agent_workflow(
+            manager, tmp_path,
+            # answer_reply is irrelevant: RATES answers are built deterministically,
+            # NOT by the (estimating) LLM.
+            answer_reply="LLM SHOULD NOT BE USED FOR RATES",
+            rate_extractor=FakeExtractor(RateExtraction(query=_air_query())),
+            rate_service=service,
+        )
+        state = run(workflow, "air freight quote SFO to ORD, 200 kg")
+        assert state["route"] == "RATES"
+        assert service.calls == 1
+        assert [q["carrier_name"] for q in state["rate_quotes"]] == ["FedEx", "UPS"]
+        answer = state["answer"]
+        # Deterministic, exact figures with an ISO currency code (never "$"), cheapest first.
+        assert "LLM SHOULD NOT" not in answer
+        assert "USD 1,200.00" in answer and "USD 1,500.00" in answer
+        assert "$" not in answer
+        assert answer.index("FedEx") < answer.index("UPS")
+        # Each carrier is credited as a source.
+        assert {c["title"] for c in state["citations"].external} == {
+            "FedEx live rate (via 7lfreight)", "UPS live rate (via 7lfreight)"
+        }
+        assert {"rate_extraction_ms", "rate_lookup_ms"} <= set(state["metrics"])
+
+    def test_incomplete_request_asks_for_clarification(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        service = FakeRateService([_quote("FedEx", 1200.0)])
+        workflow = build_agent_workflow(
+            manager, tmp_path,
+            rate_extractor=FakeExtractor(
+                RateExtraction(clarification="What's the weight and destination?")
+            ),
+            rate_service=service,
+        )
+        state = run(workflow, "I need a freight quote")
+        assert state["answer"] == "What's the weight and destination?"
+        assert service.calls == 0                 # no API call without a full query
+        assert not state.get("rate_quotes")
+        assert state["citations"].is_empty
+
+    def test_provider_failure_degrades_without_quotes(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        from app.utils.exceptions import RateProviderError
+
+        class FailingService:
+            def get_rates(self, query):
+                raise RateProviderError("7L down")
+
+        workflow = build_agent_workflow(
+            manager, tmp_path,
+            rate_extractor=FakeExtractor(RateExtraction(query=_air_query())),
+            rate_service=FailingService(),
+        )
+        state = run(workflow, "air freight quote SFO to ORD")
+        assert state["route"] == "RATES"
+        assert not state.get("rate_quotes")       # graceful: no quotes...
+        # ...and honest: it says the rate is unavailable, never an invented number.
+        assert "unavailable" in state["answer"].lower()
+        assert "$" not in state["answer"]
+        assert not any(ch.isdigit() for ch in state["answer"])
+
+    def test_auth_failure_reads_as_config_issue_not_transient(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        from app.utils.exceptions import RateProviderError
+
+        class AuthFailService:
+            def get_rates(self, query):
+                raise RateProviderError("credentials rejected", details={"kind": "auth"})
+
+        workflow = build_agent_workflow(
+            manager, tmp_path,
+            rate_extractor=FakeExtractor(RateExtraction(query=_air_query())),
+            rate_service=AuthFailService(),
+        )
+        state = run(workflow, "air freight quote SFO to ORD")
+        answer = state["answer"].lower()
+        assert "credentials" in answer          # points at the real cause
+        assert "try again" not in answer         # not a misleading transient message
+        assert "$" not in state["answer"]
+
+    def test_rates_not_configured_message(
+        self, manager: ChromaManager, tmp_path: Path
+    ) -> None:
+        # No extractor/service wired → RATES degrades to a "not configured" reply.
+        workflow = build_agent_workflow(manager, tmp_path)
+        state = run(workflow, "freight quote SFO to ORD")
+        assert state["route"] == "RATES"
+        assert "configured" in state["answer"].lower()
 
 
 class TestCorrectiveFallback:

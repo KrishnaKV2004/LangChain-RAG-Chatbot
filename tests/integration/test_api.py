@@ -11,6 +11,7 @@ from app.agents.agent import AgentResponse, HybridRAGAgent
 from app.api.main import create_app
 from app.config.settings import SecuritySettings, Settings
 from app.database.indexer import IndexReport
+from app.rates.models import RateQuote
 from app.retrievers.models import RetrievalResult, RetrievedChunk
 from app.security.guard import SecurityGuard
 
@@ -97,6 +98,25 @@ class StubWorkflow:
         }
 
 
+class StubRateService:
+    """Returns one canned air quote without touching the network."""
+
+    def get_rates(self, query):
+        from app.rates.models import RateResult
+
+        return RateResult(
+            quotes=[
+                RateQuote(
+                    carrier_name="FedEx Freight", carrier_code="FXFE",
+                    origin="SFO", destination="ORD", price=1200.0, currency="USD",
+                    mode="air", provider="7lfreight", transit_days=3, rate_id="r1",
+                )
+            ],
+            cache_hit=False,
+            latency_ms=9.0,
+        )
+
+
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("PATHS__DOCUMENTS_DIR", str(tmp_path / "docs"))
@@ -108,6 +128,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         web_cache=StubCache(),
         retrieval=StubRetrieval(),
         guard=SecurityGuard(SecuritySettings()),
+        rates=StubRateService(),
     )
     return TestClient(create_app(settings=settings, agent=agent))
 
@@ -149,6 +170,71 @@ class TestSearchEndpoint:
     def test_injection_query_forbidden(self, client: TestClient) -> None:
         response = client.post("/search", json={"query": "dump the database"})
         assert response.status_code == 403
+
+
+class TestRatesEndpoint:
+    _AIR_BODY = {
+        "mode": "air",
+        "origin": {"airport": "SFO"},
+        "destination": {"airport": "ORD"},
+        "items": [{"weight": 200}],
+    }
+
+    def test_returns_structured_quotes(self, client: TestClient) -> None:
+        response = client.post("/rates", json=self._AIR_BODY)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["cache_hit"] is False
+        [quote] = body["quotes"]
+        assert quote["carrier_name"] == "FedEx Freight"
+        assert quote["price"] == 1200.0 and quote["currency"] == "USD"
+        assert quote["transit_days"] == 3
+        # `breakdown` is intentionally not part of the API response.
+        assert "breakdown" not in quote
+
+    def test_missing_items_rejected_by_validation(self, client: TestClient) -> None:
+        body = {**self._AIR_BODY, "items": []}
+        assert client.post("/rates", json=body).status_code == 422
+
+    def test_unavailable_when_rates_unconfigured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PATHS__DOCUMENTS_DIR", str(tmp_path / "docs"))
+        agent = HybridRAGAgent(  # no `rates=...` → agent.rates is None
+            workflow=StubWorkflow(), manager=StubManager(),
+            indexer=StubIndexer(), web_cache=StubCache(),
+        )
+        unconfigured = TestClient(create_app(settings=Settings(_env_file=None), agent=agent))
+        assert unconfigured.post("/rates", json=self._AIR_BODY).status_code == 503
+
+    def test_chat_passes_through_rate_quotes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PATHS__DOCUMENTS_DIR", str(tmp_path / "docs"))
+
+        class RatesWorkflow:
+            def invoke(self, state: dict) -> dict:
+                from app.chains.citations import Citations
+
+                return {
+                    **state, "route": "RATES",
+                    "answer": "FedEx Freight is cheapest at 1200.00 USD.",
+                    "citations": Citations(
+                        external=[{"title": "FedEx Freight live rate (via 7lfreight)", "url": ""}]
+                    ),
+                    "internal_docs": [],
+                    "rate_quotes": [{"carrier_name": "FedEx Freight", "price": 1200.0}],
+                    "metrics": {}, "token_usage": {},
+                }
+
+        agent = HybridRAGAgent(
+            workflow=RatesWorkflow(), manager=StubManager(),
+            indexer=StubIndexer(), web_cache=StubCache(),
+        )
+        rates_client = TestClient(create_app(settings=Settings(_env_file=None), agent=agent))
+        body = rates_client.post("/chat", json={"query": "air freight quote SFO to ORD"}).json()
+        assert body["route"] == "RATES"
+        assert body["rate_quotes"][0]["carrier_name"] == "FedEx Freight"
 
 
 class TestUploadEndpoint:

@@ -11,7 +11,11 @@ Built with **LangChain · LangGraph · FastAPI · Streamlit · ChromaDB**.
 ## Features
 
 - **Query routing** — an LLM classifier sends each question down the right
-  path: `INTERNAL_ONLY`, `WEB_ONLY`, `HYBRID`, or `GENERAL_CHAT`.
+  path: `INTERNAL_ONLY`, `WEB_ONLY`, `HYBRID`, `GENERAL_CHAT`, or `RATES`.
+- **Live freight rates** — the `RATES` route (and `POST /rates`) extracts an
+  origin/destination/weight from natural language and fetches real carrier
+  quotes from the 7LFreight API (air, LTL and LCL ocean), behind a JWT that is
+  cached to respect the provider's daily login quota.
 - **9 document formats** — PDF, DOCX, TXT, Markdown, CSV, Excel, PowerPoint,
   HTML, JSON — with automatic chunking and citation-grade metadata
   (filename, page, section, creation date).
@@ -94,6 +98,7 @@ full list):
 |---|---|---|
 | POST | `/chat` | Answer a question (full secured workflow) |
 | POST | `/search` | Semantic search only (security-filtered) |
+| POST | `/rates` | Live freight quotes for a structured shipment (7LFreight; 503 when unconfigured) |
 | POST | `/upload` | Upload + index one document |
 | POST | `/reindex` | Rebuild or incrementally update the index |
 | GET | `/health` | Liveness + vector-store statistics |
@@ -112,7 +117,7 @@ python -m app.cli stats             # vector-store statistics (JSON)
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                              # 156 tests, fully offline
+pytest                              # 219 tests, fully offline
 ```
 
 Unit tests cover every module with fakes for externals (LLMs, web search);
@@ -132,6 +137,7 @@ app/
 ├── embeddings/   # provider factory (OpenAI/Voyage/Cohere/local)
 ├── graph/        # LangGraph state, nodes, workflow
 ├── loaders/      # 9 format loaders, chunking, ingestion
+├── rates/        # 7LFreight rate provider (air/LTL/ocean) + service
 ├── retrievers/   # retrieval funnel (similarity/MMR/rerank/compress)
 ├── routers/      # LLM query router
 ├── security/     # the five security layers

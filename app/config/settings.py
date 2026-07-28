@@ -171,6 +171,29 @@ class CacheSettings(BaseModel):
     default_ttl_seconds: int = Field(default=86_400, gt=0)
 
 
+class RatesSettings(BaseModel):
+    """7LFreight rate-quote provider configuration.
+
+    7LFreight authenticates via username/password (see ``Settings.seven_l_*``)
+    to obtain a short-lived JWT — not a static API key like Tavily.
+    """
+
+    enabled: bool = True
+    base_url: str = "https://restapi.my7l.com"
+    # Path prefix under base_url (7L versions its REST API at /api/v1).
+    api_prefix: str = "/api/v1"
+    timeout_seconds: int = Field(default=20, gt=0)
+    # Login is rate-limited to a DAILY quota, so the JWT is cached on disk and
+    # reused across restarts; refresh (not re-login) renews it near expiry.
+    # Safety margin (seconds) subtracted from the token's expiry before it is
+    # considered stale, so a call never races the clock.
+    token_expiry_margin_seconds: int = Field(default=120, ge=0)
+    # Quotes carry their own ValidFrom/ValidTo; this cache just avoids
+    # hammering the API for the same lookup within a short window.
+    cache_ttl_seconds: int = Field(default=300, gt=0)  # 5 minutes
+    max_carriers_returned: int = Field(default=5, gt=0, le=20)
+
+
 class HermesSettings(BaseModel):
     """Hermes — the self-refinement agent that reviews and improves draft
     answers (quality, faithfulness, human tone) before they leave the system."""
@@ -250,6 +273,10 @@ class Settings(BaseSettings):
     tavily_api_key: Optional[SecretStr] = None
     voyage_api_key: Optional[SecretStr] = None
     cohere_api_key: Optional[SecretStr] = None
+    # 7LFreight uses username/password (not a static key) to obtain a JWT.
+    # Field aliases because "7L_USERNAME" is not a legal Python identifier.
+    seven_l_username: Optional[str] = Field(default=None, alias="7L_USERNAME")
+    seven_l_password: Optional[SecretStr] = Field(default=None, alias="7L_PASSWORD")
 
     # ---- Nested groups ----------------------------------------------------- #
     llm: LLMSettings = Field(default_factory=LLMSettings)
@@ -258,6 +285,7 @@ class Settings(BaseSettings):
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
+    rates: RatesSettings = Field(default_factory=RatesSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     hermes: HermesSettings = Field(default_factory=HermesSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)

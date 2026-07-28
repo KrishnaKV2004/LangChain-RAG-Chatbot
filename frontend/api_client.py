@@ -47,6 +47,10 @@ class RAGAPIClient:
             payload["force_route"] = force_route
         return self._post("/chat", json=payload)
 
+    def rates(self, query: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch structured freight quotes for an already-parsed rate query."""
+        return self._post("/rates", json=query)
+
     def upload(self, filename: str, content: bytes) -> Dict[str, Any]:
         return self._request(
             "POST", "/upload", files={"file": (filename, content)}

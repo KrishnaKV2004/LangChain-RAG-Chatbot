@@ -26,6 +26,8 @@ class Route(str, Enum):
     WEB_ONLY = "WEB_ONLY"
     HYBRID = "HYBRID"
     GENERAL_CHAT = "GENERAL_CHAT"
+    #: Live freight rate quote via the carrier rate API (see ``app.rates``).
+    RATES = "RATES"
 
 
 #: Fallback when classification fails — HYBRID consults every source, so a
@@ -66,7 +68,13 @@ class QueryRouter:
         one it *started* with.
         """
         upper = text.upper()
-        for route in (Route.INTERNAL_ONLY, Route.WEB_ONLY, Route.GENERAL_CHAT, Route.HYBRID):
+        for route in (
+            Route.INTERNAL_ONLY,
+            Route.WEB_ONLY,
+            Route.GENERAL_CHAT,
+            Route.RATES,
+            Route.HYBRID,
+        ):
             if route.value in upper:
                 return route
         logger.warning("router_unparseable_reply", reply=text[:80])

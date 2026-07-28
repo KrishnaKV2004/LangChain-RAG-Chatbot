@@ -109,9 +109,12 @@ class AnswerChain:
         web_docs: Optional[List[Document]] = None,
         history: Optional[List[Dict[str, str]]] = None,
         general_chat: bool = False,
+        rate_docs: Optional[List[Document]] = None,
     ) -> GenerationResult:
         """Produce an answer grounded in the supplied context."""
-        messages = self._build_messages(query, internal_docs, web_docs, history, general_chat)
+        messages = self._build_messages(
+            query, internal_docs, web_docs, history, general_chat, rate_docs
+        )
 
         with Timer() as timer:
             try:
@@ -143,10 +146,13 @@ class AnswerChain:
         web_docs: Optional[List[Document]],
         history: Optional[List[Dict[str, str]]],
         general_chat: bool,
+        rate_docs: Optional[List[Document]] = None,
     ) -> List[BaseMessage]:
         messages: List[BaseMessage] = [
             SystemMessage(
-                content=build_system_prompt(internal_docs, web_docs, general_chat)
+                content=build_system_prompt(
+                    internal_docs, web_docs, rate_docs, general_chat=general_chat
+                )
             )
         ]
         # History arrives as [{"role": "user"|"assistant", "content": ...}]

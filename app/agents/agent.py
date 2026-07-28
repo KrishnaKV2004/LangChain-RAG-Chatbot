@@ -20,9 +20,11 @@ from app.config.settings import Settings
 from app.database.chroma import ChromaManager
 from app.database.indexer import IndexingService
 from app.embeddings.factory import create_embeddings
+from app.chains.rate_extraction import RateExtractor
 from app.graph.nodes import GraphNodes
 from app.graph.workflow import build_workflow
 from app.loaders.ingestion import IngestionService
+from app.rates.seven_l import SevenLRates
 from app.retrievers.compression import SentenceCompressor
 from app.retrievers.pipeline import RetrievalPipeline
 from app.retrievers.reranker import CrossEncoderReranker
@@ -50,6 +52,8 @@ class AgentResponse:
     metrics: Dict[str, float] = field(default_factory=dict)
     token_usage: Dict[str, int] = field(default_factory=dict)
     web_cache_hit: bool = False
+    #: Structured freight quotes (RATES route); empty for every other route.
+    rate_quotes: List[Dict[str, Any]] = field(default_factory=list)
     total_latency_ms: float = 0.0
 
 
@@ -64,6 +68,7 @@ class HybridRAGAgent:
         web_cache: TTLCache,
         retrieval: Optional[RetrievalPipeline] = None,
         guard: Optional[SecurityGuard] = None,
+        rates: Optional[SevenLRates] = None,
     ) -> None:
         self._workflow = workflow
         # Exposed for the API layer (/upload, /reindex, /health, /cache,
@@ -73,6 +78,8 @@ class HybridRAGAgent:
         self.web_cache = web_cache
         self.retrieval = retrieval
         self.guard = guard
+        # Direct rate access for the /rates endpoint (None when 7L unconfigured).
+        self.rates = rates
 
     def chat(
         self,
@@ -114,6 +121,7 @@ class HybridRAGAgent:
             metrics=state.get("metrics", {}),
             token_usage=state.get("token_usage", {}),
             web_cache_hit=bool(state.get("web_cache_hit")),
+            rate_quotes=state.get("rate_quotes", []),
             total_latency_ms=round(timer.elapsed_ms, 1),
         )
         logger.info(
@@ -151,6 +159,19 @@ def create_agent(settings: Settings) -> HybridRAGAgent:
         create_search_provider(settings), web_cache, settings.web_search
     )
 
+    # ---- Freight rates (7LFreight) — optional; needs credentials ---------- #
+    # Absent credentials, the RATES route degrades to a "not configured"
+    # message rather than breaking startup for users who don't need rates.
+    rate_service: Optional[SevenLRates] = None
+    rate_extractor: Optional[RateExtractor] = None
+    if settings.rates.enabled and settings.seven_l_username and settings.seven_l_password:
+        # One disk cache holds the auth token, carrier lists and quotes.
+        rate_cache = TTLCache(settings.cache.path, settings.rates.cache_ttl_seconds)
+        rate_service = SevenLRates(settings, rate_cache)
+        # Extraction is a cheap structured-output task → the router-tier model.
+        rate_extractor = RateExtractor(create_chat_model(settings, role="router"))
+        logger.info("rates_enabled")
+
     # ---- Security --------------------------------------------------------- #
     guard = SecurityGuard(settings.security, protected_markers=PROTECTED_MARKERS)
 
@@ -174,9 +195,19 @@ def create_agent(settings: Settings) -> HybridRAGAgent:
 
     # ---- Workflow ------------------------------------------------------------ #
     nodes = GraphNodes(
-        router, retrieval, web_search, guard, answer_chain, CitationBuilder(), refiner
+        router,
+        retrieval,
+        web_search,
+        guard,
+        answer_chain,
+        CitationBuilder(),
+        refiner,
+        rate_extractor=rate_extractor,
+        rate_service=rate_service,
     )
     workflow = build_workflow(nodes)
 
     logger.info("agent_ready", environment=settings.environment)
-    return HybridRAGAgent(workflow, manager, indexer, web_cache, retrieval, guard)
+    return HybridRAGAgent(
+        workflow, manager, indexer, web_cache, retrieval, guard, rates=rate_service
+    )

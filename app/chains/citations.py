@@ -6,7 +6,7 @@ This is what makes fabricated citations structurally impossible.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from langchain_core.documents import Document
 
@@ -33,6 +33,7 @@ class CitationBuilder:
         self,
         internal_docs: List[Document],
         web_docs: List[Document],
+        rate_docs: Optional[List[Document]] = None,
     ) -> Citations:
         """Build citations from the exact documents the LLM saw."""
         citations = Citations()
@@ -52,6 +53,21 @@ class CitationBuilder:
                 citations.external.append(
                     {"title": document.metadata.get("title", url), "url": url}
                 )
+
+        # Rate quotes are their own kind of source: credit each distinct carrier
+        # (they carry no URL, so they land in `external` with an empty link).
+        seen_rate = set()
+        for document in rate_docs or []:
+            meta = document.metadata
+            carrier = meta.get("carrier", "carrier")
+            key = (carrier, meta.get("mode", ""))
+            if key in seen_rate:
+                continue
+            seen_rate.add(key)
+            provider = meta.get("provider", "rate provider")
+            citations.external.append(
+                {"title": f"{carrier} live rate (via {provider})", "url": ""}
+            )
         return citations
 
     @staticmethod

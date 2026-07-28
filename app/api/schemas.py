@@ -32,7 +32,7 @@ class ChatRequest(BaseModel):
     user_id: str = Field(default="anonymous", max_length=128)
     #: Optional route override (UI "search mode"): skips the LLM classifier.
     force_route: Optional[
-        Literal["INTERNAL_ONLY", "WEB_ONLY", "HYBRID", "GENERAL_CHAT"]
+        Literal["INTERNAL_ONLY", "WEB_ONLY", "HYBRID", "GENERAL_CHAT", "RATES"]
     ] = None
 
 
@@ -45,6 +45,8 @@ class ChatResponse(BaseModel):
     metrics: Dict[str, float]
     token_usage: Dict[str, int]
     web_cache_hit: bool
+    #: Structured freight quotes when ``route == "RATES"``; empty otherwise.
+    rate_quotes: List[Dict[str, object]] = Field(default_factory=list)
     total_latency_ms: float
 
 
@@ -117,6 +119,72 @@ class CacheStatsResponse(BaseModel):
 class CacheClearResponse(BaseModel):
     removed: int
     expired_only: bool
+
+
+# --------------------------------------------------------------------------- #
+# /rates
+# --------------------------------------------------------------------------- #
+
+
+class RateItemRequest(BaseModel):
+    """One freight line (mirrors :class:`app.rates.models.FreightItem`)."""
+
+    weight: float = Field(gt=0)
+    qty: int = Field(default=1, ge=1, le=1_000)
+    weight_type: Literal["each", "total"] = "each"
+    length: Optional[float] = Field(default=None, gt=0)
+    width: Optional[float] = Field(default=None, gt=0)
+    height: Optional[float] = Field(default=None, gt=0)
+    dim_type: str = Field(default="PLT", max_length=8)
+    commodity: str = Field(default="General freight", max_length=200)
+    #: LTL NMFC freight class (50–500); ignored for air/ocean.
+    freight_class: Optional[str] = Field(default=None, max_length=8)
+    hazmat: bool = False
+    stack: bool = False
+
+
+class RateLocationRequest(BaseModel):
+    """An origin or destination, addressed per its mode."""
+
+    airport: Optional[str] = Field(default=None, max_length=8)   # air: IATA
+    port: Optional[str] = Field(default=None, max_length=8)      # ocean: UN/LOCODE
+    city: Optional[str] = Field(default=None, max_length=120)    # ltl
+    state: Optional[str] = Field(default=None, max_length=40)
+    zipcode: Optional[str] = Field(default=None, max_length=20)
+    country: str = Field(default="US", max_length=3)
+
+
+class RateRequest(BaseModel):
+    mode: Literal["air", "ltl", "ocean"]
+    origin: RateLocationRequest
+    destination: RateLocationRequest
+    items: List[RateItemRequest] = Field(min_length=1, max_length=20)
+    uom: Literal["US", "METRIC", "MIXED"] = "US"
+    #: LTL pickup date (YYYY-MM-DD); provider defaults it when omitted.
+    pickup_date: Optional[str] = Field(default=None, max_length=10)
+    hazardous: bool = False
+
+
+class RateQuoteResponse(BaseModel):
+    carrier_name: str
+    carrier_code: str
+    origin: str
+    destination: str
+    price: float
+    currency: str
+    mode: str
+    provider: str
+    transit_days: Optional[int] = None
+    rate_id: Optional[str] = None
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    remarks: Optional[str] = None
+
+
+class RatesResponse(BaseModel):
+    quotes: List[RateQuoteResponse]
+    cache_hit: bool
+    latency_ms: float
 
 
 class ErrorResponse(BaseModel):

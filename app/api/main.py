@@ -23,6 +23,7 @@ from app.utils.exceptions import (
     ConfigurationError,
     DocumentLoadError,
     RAGChatbotError,
+    RateProviderError,
     SecurityViolationError,
     WebSearchError,
 )
@@ -35,6 +36,7 @@ _STATUS_MAP = [
     (SecurityViolationError, 403),
     (DocumentLoadError, 400),
     (WebSearchError, 502),
+    (RateProviderError, 502),
     (ConfigurationError, 500),
 ]
 

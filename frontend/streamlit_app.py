@@ -78,6 +78,24 @@ def main() -> None:
 
         st.markdown(response["answer"])
 
+        # Freight quotes (RATES route) render as a sortable table under the answer.
+        quotes = response.get("rate_quotes") or []
+        if quotes:
+            st.dataframe(
+                [
+                    {
+                        "Carrier": q.get("carrier_name"),
+                        "Mode": q.get("mode"),
+                        "Price": f"{q.get('price')} {q.get('currency', '')}".strip(),
+                        "Transit (days)": q.get("transit_days"),
+                        "Lane": f"{q.get('origin')} → {q.get('destination')}",
+                    }
+                    for q in quotes
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+
     messages.append({"role": "assistant", "content": response["answer"]})
 
 

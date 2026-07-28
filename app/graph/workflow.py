@@ -7,6 +7,8 @@ Routing logic lives here as conditional edges; behaviour lives in the nodes.
            └► classify ─┬─ INTERNAL_ONLY ─► retrieve ──────────┐
                         ├─ HYBRID ────────► retrieve ─► web_search ─┐
                         ├─ WEB_ONLY ──────► web_search ─────────┤
+                        ├─ RATES ─► extract_rate_query ─► fetch_rates ─► build_citations
+                        │                └─ (needs info) ─► build_citations
                         └─ GENERAL_CHAT ──────────────────► generate
                                         merge_context ─► generate
                                                               │
@@ -44,6 +46,8 @@ def build_workflow(nodes: GraphNodes):
     graph.add_node("classify", nodes.classify)
     graph.add_node("retrieve", nodes.retrieve)
     graph.add_node("web_search", nodes.web_search)
+    graph.add_node("extract_rate_query", nodes.extract_rate_query)  # RATES route
+    graph.add_node("fetch_rates", nodes.fetch_rates)
     graph.add_node("merge_context", nodes.merge_context)
     graph.add_node("generate", nodes.generate)
     graph.add_node("escalate_to_web", nodes.escalate_to_web)  # corrective fallback
@@ -69,8 +73,21 @@ def build_workflow(nodes: GraphNodes):
             Route.HYBRID.value: "retrieve",
             Route.WEB_ONLY.value: "web_search",
             Route.GENERAL_CHAT.value: "generate",
+            Route.RATES.value: "extract_rate_query",
         },
     )
+
+    # RATES: extraction either yields a query (→ fetch) or needs more info from
+    # the user (→ straight to citations with the clarification already set).
+    # fetch_rates formats the answer deterministically from the real quotes, so
+    # it goes straight to citations — bypassing the LLM (which would otherwise
+    # estimate a price) and Hermes (which would rewrite exact figures).
+    graph.add_conditional_edges(
+        "extract_rate_query",
+        lambda state: "fetch" if state.get("rate_query") else "answer",
+        {"fetch": "fetch_rates", "answer": "build_citations"},
+    )
+    graph.add_edge("fetch_rates", "build_citations")
 
     # HYBRID continues from retrieval into web search; INTERNAL goes straight
     # to the merge/security stage.

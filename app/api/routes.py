@@ -18,6 +18,10 @@ from app.api.schemas import (
     ChatResponse,
     HealthResponse,
     IndexReportResponse,
+    RateLocationRequest,
+    RateRequest,
+    RateQuoteResponse,
+    RatesResponse,
     ReindexRequest,
     SearchHit,
     SearchRequest,
@@ -26,6 +30,7 @@ from app.api.schemas import (
 from app.config.settings import Settings
 from app.database.indexer import IndexReport
 from app.loaders.registry import default_registry
+from app.rates.models import FreightItem, Location, RateMode, RateQuery
 from app.security.models import UserContext
 from app.utils.logging import get_logger
 
@@ -103,6 +108,72 @@ def search(request: SearchRequest, agent: HybridRAGAgent = Depends(get_agent)) -
             )
         )
     return SearchResponse(results=hits, latency_ms=round(result.latency_ms, 1))
+
+
+# --------------------------------------------------------------------------- #
+# Freight rate quotes (7LFreight air / LTL / ocean)
+# --------------------------------------------------------------------------- #
+
+
+def _to_location(request: RateLocationRequest) -> Location:
+    return Location(
+        airport=request.airport,
+        port=request.port,
+        city=request.city,
+        state=request.state,
+        zipcode=request.zipcode,
+        country=request.country,
+    )
+
+
+@router.post("/rates", response_model=RatesResponse)
+def rates(request: RateRequest, agent: HybridRAGAgent = Depends(get_agent)) -> RatesResponse:
+    """Get live carrier rate quotes for a structured shipment request.
+
+    This is the deterministic counterpart to the chatbot's RATES route: the
+    caller supplies an already-structured query (no NL extraction). Provider
+    failures surface as 502 via the domain exception handler.
+    """
+    if agent.rates is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Rate quoting is not configured (missing 7LFreight credentials)",
+        )
+    query = RateQuery(
+        mode=RateMode(request.mode),
+        origin=_to_location(request.origin),
+        destination=_to_location(request.destination),
+        items=[
+            FreightItem(
+                weight=item.weight,
+                qty=item.qty,
+                weight_type=item.weight_type,
+                length=item.length,
+                width=item.width,
+                height=item.height,
+                dim_type=item.dim_type,
+                commodity=item.commodity,
+                freight_class=item.freight_class,
+                hazmat=item.hazmat,
+                stack=item.stack,
+            )
+            for item in request.items
+        ],
+        uom=request.uom,
+        pickup_date=request.pickup_date,
+        hazardous=request.hazardous,
+    )
+    outcome = agent.rates.get_rates(query)  # RateProviderError → 502 (handler)
+    return RatesResponse(
+        quotes=[
+            RateQuoteResponse(
+                **{key: value for key, value in quote.to_dict().items() if key != "breakdown"}
+            )
+            for quote in outcome.quotes
+        ],
+        cache_hit=outcome.cache_hit,
+        latency_ms=round(outcome.latency_ms, 1),
+    )
 
 
 # --------------------------------------------------------------------------- #

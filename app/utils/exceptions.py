@@ -50,6 +50,10 @@ class WebSearchError(RAGChatbotError):
     """The web-search provider failed or timed out."""
 
 
+class RateProviderError(RAGChatbotError):
+    """The freight rate-quote provider failed, timed out, or rejected auth."""
+
+
 class CacheError(RAGChatbotError):
     """The TTL cache could not be read or written."""
 

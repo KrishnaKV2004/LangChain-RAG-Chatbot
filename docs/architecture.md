@@ -16,8 +16,11 @@ flowchart TD
     QC -->|HYBRID| DR
     QC -->|HYBRID| WS
     QC -->|GENERAL_CHAT| AG
+    QC -->|RATES| RX[Rate Extraction<br/>NL → RateQuery]
+    RX --> RF[Fetch Rates<br/>7LFreight air/LTL/ocean]
     DR --> CM[Context Merge<br/>sensitivity + permission filter]
     WS --> CM
+    RF --> CM
     CM --> AG[Answer Generation<br/>LLM]
     AG --> CB[Citation Builder]
     CB --> SV[Security Validation<br/>response scan + PII redaction]
@@ -34,14 +37,15 @@ flowchart TD
 | `app/embeddings` | Provider factory: OpenAI / Voyage / Cohere / Sentence Transformers |
 | `app/database` | ChromaDB manager: `documents` + `web_cache` collections, persistence, rebuild |
 | `app/retrievers` | Similarity / MMR search, metadata filtering, contextual compression, cross-encoder reranking |
-| `app/routers` | LLM query classifier → `INTERNAL_ONLY` / `WEB_ONLY` / `HYBRID` / `GENERAL_CHAT` |
+| `app/routers` | LLM query classifier → `INTERNAL_ONLY` / `WEB_ONLY` / `HYBRID` / `GENERAL_CHAT` / `RATES` |
 | `app/search` | `SearchProvider` interface; Tavily implementation; dedup + ranking |
-| `app/cache` | TTL cache for web content (default 24 h, never permanent) |
+| `app/rates` | `RateProvider` interface; 7LFreight client (air / LTL / ocean) with JWT caching; NL→query extraction; sort + cap + TTL caching |
+| `app/cache` | TTL cache for web content and rate quotes (never permanent) |
 | `app/security` | Layer 1 injection detection · Layer 2 sensitive-doc detection · Layer 3 permission validation · Layer 4 response scanning · Layer 5 PII detection |
 | `app/chains` | Prompt templates, answer-generation chain, citation builder |
 | `app/graph` | LangGraph state machine wiring all nodes |
 | `app/agents` | High-level facade consumed by API and UI |
-| `app/api` | FastAPI: `/chat`, `/upload`, `/reindex`, `/search`, `/health`, `/cache` |
+| `app/api` | FastAPI: `/chat`, `/upload`, `/reindex`, `/search`, `/rates`, `/health`, `/cache` |
 | `frontend/` | Streamlit dark-theme chat UI |
 | `tests/` | Unit tests (mocked externals) + integration tests |
 

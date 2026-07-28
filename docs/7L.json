@@ -1,0 +1,290 @@
+{
+  "info": {
+    "name": "7LFreight API — Rates & Booking",
+    "description": "Test collection for 7LFreight REST API (https://restapi.my7l.com/api/v1/docs).\n\nWorkflow:\n1. Run '1. Login' once — the access token is saved automatically to {{accessToken}} and reused by every other request (7L enforces a DAILY token-issuance quota, so do NOT login before every call).\n2. Run '2a. Carrier Lookup' to get CarrierHash values — the first hash is auto-saved to {{carrierHash}}.\n3. Run one of the rate requests (LTL / Air / Ocean).\n4. For LTL: the first returned rate can be saved as a quote via '4. Save Quote (LTL)' using {{rateId}}.\n5. Booking/dispatch uses the Dispatch object (see '5. Book / Dispatch') — endpoint access must be enabled by 7L for your account.\n\nSet {{username}} and {{password}} in the collection variables before starting.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://restapi.my7l.com/api/v1" },
+    { "key": "username", "value": "YOUR_7L_USERNAME" },
+    { "key": "password", "value": "YOUR_7L_PASSWORD" },
+    { "key": "accessToken", "value": "" },
+    { "key": "carrierHash", "value": "" },
+    { "key": "rateId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1. Login (run once — token auto-saved)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "if (json.data && json.data.accessToken) {",
+              "    pm.collectionVariables.set('accessToken', json.data.accessToken);",
+              "    console.log('accessToken saved. Expires:', json.data.exp);",
+              "} else {",
+              "    console.warn('No accessToken in response:', JSON.stringify(json));",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": "{{baseUrl}}/login",
+        "description": "Authenticates and returns an access token. IMPORTANT: 7L enforces a per-account DAILY quota on token issuance — reuse the token until it expires, then use Refresh Token."
+      }
+    },
+    {
+      "name": "1b. Refresh Token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "if (json.data && json.data.accessToken) {",
+              "    pm.collectionVariables.set('accessToken', json.data.accessToken);",
+              "    console.log('accessToken refreshed.');",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"{{accessToken}}\"\n}"
+        },
+        "url": "{{baseUrl}}/refreshtoken",
+        "description": "Exchange an expired token for a new one without consuming the daily login quota."
+      }
+    },
+    {
+      "name": "2a. Carrier Lookup (get carrierHash)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "const results = json.data && json.data.results;",
+              "if (results && results.length) {",
+              "    pm.collectionVariables.set('carrierHash', results[0].CarrierHash);",
+              "    console.log('Saved carrierHash for:', results[0].Name, '(', results[0].SCAC, ')');",
+              "    console.log('Total carriers available:', results.length);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/database/ltlaccount?carrierType[]=LTL",
+          "host": ["{{baseUrl}}"],
+          "path": ["database", "ltlaccount"],
+          "query": [{ "key": "carrierType[]", "value": "LTL", "description": "3PL, DRY (Drayage), LTL, PAK (Small Pack), VOL (Volume)" }]
+        },
+        "description": "Lists the LTL/common carriers configured on your account. Each result includes the CarrierHash needed for rate requests and whether the carrier supports ElectronicDispatch (i.e. API booking)."
+      }
+    },
+    {
+      "name": "2b. LTL Fee / Accessorial Codes",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/ltl/ltlfees",
+        "description": "List of accessorial codes (liftgate, residential, etc.) usable in accessorialsList[] on rate and dispatch requests."
+      }
+    },
+    {
+      "name": "3a. LTL Rates (door-to-door price)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "const results = json.data && json.data.results;",
+              "if (results && results.length) {",
+              "    console.log('Carrier:', results[0].Name, '| Total:', results[0].Total, '| Transit days:', results[0].TransitDays);",
+              "    const rid = results[0].RateId || results[0].rateId || json.data.RateId;",
+              "    if (rid) { pm.collectionVariables.set('rateId', rid); console.log('rateId saved:', rid); }",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/ltl/ltlrates?carrierHash={{carrierHash}}&originCity=Fremont&originState=CA&originZipcode=94538&originCountry=US&destinationCity=Chicago&destinationState=IL&destinationZipcode=60601&destinationCountry=US&UOM=US&strictResult=false&harmonizedCharges=true&pickupDate=2026-07-27&freightInfo=[{\"qty\":\"1\",\"weight\":\"500\",\"weightType\":\"each\",\"length\":\"48\",\"width\":\"40\",\"height\":\"48\",\"dimType\":\"PLT\",\"class\":\"100\",\"hazmat\":false,\"stack\":false,\"commodity\":\"General freight\"}]",
+          "host": ["{{baseUrl}}"],
+          "path": ["ltl", "ltlrates"],
+          "query": [
+            { "key": "carrierHash", "value": "{{carrierHash}}", "description": "REQUIRED — from 2a. Carrier Lookup" },
+            { "key": "originCity", "value": "Fremont" },
+            { "key": "originState", "value": "CA" },
+            { "key": "originZipcode", "value": "94538" },
+            { "key": "originCountry", "value": "US", "description": "US | CA | MX" },
+            { "key": "destinationCity", "value": "Chicago" },
+            { "key": "destinationState", "value": "IL" },
+            { "key": "destinationZipcode", "value": "60601" },
+            { "key": "destinationCountry", "value": "US" },
+            { "key": "UOM", "value": "US", "description": "US | METRIC | MIXED" },
+            { "key": "strictResult", "value": "false", "description": "false returns a RateId so the quote can be saved" },
+            { "key": "harmonizedCharges", "value": "true", "description": "adds charge-code breakdown node" },
+            { "key": "pickupDate", "value": "2026-07-27", "description": "YYYY-MM-DD" },
+            { "key": "freightInfo", "value": "[{\"qty\":\"1\",\"weight\":\"500\",\"weightType\":\"each\",\"length\":\"48\",\"width\":\"40\",\"height\":\"48\",\"dimType\":\"PLT\",\"class\":\"100\",\"hazmat\":false,\"stack\":false,\"commodity\":\"General freight\"}]", "description": "JSON array — Reference (B). weightType: each|total. dimType: CTN|PLT|CRT|CON|CYL|DRM|ENV|BOX|BDL. class: 50–500 freight class." }
+          ]
+        },
+        "description": "Door-to-door LTL rate for ONE carrier (identified by carrierHash). Response: Total, TransitDays, QuoteNumber, RateBreakdown (linehaul, fuel surcharge, accessorials). Optional: accessorialsList[]=LFO etc. (codes from 2b)."
+      }
+    },
+    {
+      "name": "3b. Air Rates — Complete Air (door/airport combos)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/expediteair/completeair?originAirport=SFO&destinationAirport=ORD&UOM=US&freightInfo=[{\"qty\":\"1\",\"weight\":\"200\",\"weightType\":\"each\",\"length\":\"48\",\"width\":\"40\",\"height\":\"40\",\"dimType\":\"PLT\",\"commodity\":\"General cargo\"}]",
+          "host": ["{{baseUrl}}"],
+          "path": ["expediteair", "completeair"],
+          "query": [
+            { "key": "originAirport", "value": "SFO", "description": "3-letter IATA. For Door-to-X use originCity/State/Zipcode instead" },
+            { "key": "destinationAirport", "value": "ORD", "description": "3-letter IATA. For X-to-Door use destinationCity/State/Zipcode instead" },
+            { "key": "UOM", "value": "US" },
+            { "key": "freightInfo", "value": "[{\"qty\":\"1\",\"weight\":\"200\",\"weightType\":\"each\",\"length\":\"48\",\"width\":\"40\",\"height\":\"40\",\"dimType\":\"PLT\",\"commodity\":\"General cargo\"}]" }
+          ]
+        },
+        "description": "Domestic expedite air. Door-to-Door: pass origin+destination City/State/Zipcode. Airport-to-Door: originAirport + destination address. Door-to-Airport: origin address + destinationAirport. Optional filters: airlineCodeList[], contractRates, TSAPickupAgents, airlineRateType[] (ALL|BULK|ULD|SCR)."
+      }
+    },
+    {
+      "name": "3c. International Air Rates (airport-to-airport)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/international/airrates?originAirport=SFO&destinationAirport=BOM&UOM=US&freightInfo=[{\"qty\":\"2\",\"weight\":\"150\",\"weightType\":\"each\",\"length\":\"100\",\"width\":\"80\",\"height\":\"90\",\"dimType\":\"PLT\",\"commodity\":\"Machinery parts\"}]",
+          "host": ["{{baseUrl}}"],
+          "path": ["international", "airrates"],
+          "query": [
+            { "key": "originAirport", "value": "SFO" },
+            { "key": "destinationAirport", "value": "BOM" },
+            { "key": "UOM", "value": "US" },
+            { "key": "freightInfo", "value": "[{\"qty\":\"2\",\"weight\":\"150\",\"weightType\":\"each\",\"length\":\"100\",\"width\":\"80\",\"height\":\"90\",\"dimType\":\"PLT\",\"commodity\":\"Machinery parts\"}]" }
+          ]
+        },
+        "description": "International airport-to-airport rates. Check exact parameter list in Swagger (#/International) — structure mirrors expedite air."
+      }
+    },
+    {
+      "name": "3d. LCL Ocean Rates",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/lcl/oceanrates?carrierHash={{carrierHash}}&originPort=USOAK&destinationPort=INNSA&UOM=US&hazardous=false&freightInfo=[{\"qty\":\"1\",\"weight\":\"1000\",\"weightType\":\"total\",\"length\":\"120\",\"width\":\"100\",\"height\":\"100\",\"dimType\":\"CRT\",\"commodity\":\"General cargo\"}]",
+          "host": ["{{baseUrl}}"],
+          "path": ["lcl", "oceanrates"],
+          "query": [
+            { "key": "carrierHash", "value": "{{carrierHash}}", "description": "From /database/lclaccount (not ltlaccount!)" },
+            { "key": "originPort", "value": "USOAK", "description": "UN/LOCODE — lookup via /tools/ports" },
+            { "key": "destinationPort", "value": "INNSA" },
+            { "key": "UOM", "value": "US" },
+            { "key": "hazardous", "value": "false" },
+            { "key": "freightInfo", "value": "[{\"qty\":\"1\",\"weight\":\"1000\",\"weightType\":\"total\",\"length\":\"120\",\"width\":\"100\",\"height\":\"100\",\"dimType\":\"CRT\",\"commodity\":\"General cargo\"}]" }
+          ]
+        },
+        "description": "LCL ocean rates. Get carrierHash from GET /database/lclaccount and port codes from GET /tools/ports."
+      }
+    },
+    {
+      "name": "4. Save Quote (LTL)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"rateId\": \"{{rateId}}\"\n}"
+        },
+        "url": "{{baseUrl}}/ltl/rate/save",
+        "description": "Persists a previously fetched LTL rate as a quote (201 Created). Requires the RateId returned by 3a when strictResult=false. The saved quote's QuoteNumber can then be used as a referenceNumber (type Q) when booking."
+      }
+    },
+    {
+      "name": "5. Book / Dispatch (LTL) — testOnly first!",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"testOnly\": true,\n  \"carrierHash\": \"{{carrierHash}}\",\n  \"freightInfo\": [\n    {\n      \"qty\": 1,\n      \"weight\": 500,\n      \"weightType\": \"each\",\n      \"length\": 48,\n      \"width\": 40,\n      \"height\": 48,\n      \"dimType\": \"PLT\",\n      \"class\": \"100\",\n      \"hazmat\": false,\n      \"stack\": false,\n      \"commodity\": \"General freight\"\n    }\n  ],\n  \"UOM\": \"US\",\n  \"accessorialsList\": [],\n  \"pickupDate\": \"2026-07-27\",\n  \"pickupTimeFrom\": \"09:00\",\n  \"pickupTimeTo\": \"17:00\",\n  \"BOLNumber\": \"\",\n  \"BOLInstructions\": \"\",\n  \"PRONumber\": \"\",\n  \"shipper\": {\n    \"name\": \"Sky2C Freight Systems\",\n    \"referenceNumber\": \"\",\n    \"address1\": \"44053 Fremont Blvd\",\n    \"address2\": \"\",\n    \"cityAlias\": \"Fremont\",\n    \"state\": \"CA\",\n    \"zipcode\": \"94538\",\n    \"country\": \"US\",\n    \"contact\": \"Krishna V\",\n    \"phone\": \"510-000-0000\",\n    \"email\": \"krishna.v@sky2c.com\"\n  },\n  \"consignee\": {\n    \"name\": \"Test Consignee Inc\",\n    \"referenceNumber\": \"\",\n    \"address1\": \"1 Test St\",\n    \"address2\": \"\",\n    \"cityAlias\": \"Chicago\",\n    \"state\": \"IL\",\n    \"zipcode\": \"60601\",\n    \"country\": \"US\",\n    \"contact\": \"Receiver Name\",\n    \"phone\": \"312-000-0000\",\n    \"email\": \"receiver@example.com\"\n  },\n  \"referenceNumbers\": [\n    { \"type\": \"P\", \"value\": \"PO-TEST-001\" },\n    { \"type\": \"Q\", \"value\": \"\" }\n  ],\n  \"extraInfo\": \"Postman test booking\"\n}"
+        },
+        "url": "{{baseUrl}}/expco/book",
+        "description": "Booking uses the Dispatch object (Reference C: https://restapi.my7l.com/dist/referenceDispatch.json).\n\nIMPORTANT:\n- ALWAYS keep testOnly: true while testing — it validates the booking without dispatching to the carrier.\n- The dispatch/booking endpoints are hidden in the public Swagger and must be ENABLED for your account by 7L — if you get 401/403 with a valid token, email development@7LFreight.com to get booking API access and confirm the exact endpoint path for your account (LTL dispatch vs expco/book).\n- referenceNumbers types: S=shipper ref, C=consignee ref, T=third party ref, P=PO number, Q=quote number (from step 4)."
+      }
+    },
+    {
+      "name": "6. Track LTL Shipment — Tracking Codes",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/ltl/ltltracking/codes",
+        "description": "Status code definitions for LTL tracking. Actual tracking endpoint: GET /ltl/ltltracking (hidden in public spec) and GET /expco/{BOLNumber}/track."
+      }
+    },
+    {
+      "name": "Utility — Airports Lookup",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/tools/airports?search=San Francisco",
+          "host": ["{{baseUrl}}"],
+          "path": ["tools", "airports"],
+          "query": [{ "key": "search", "value": "San Francisco" }]
+        }
+      }
+    },
+    {
+      "name": "Utility — Ports Lookup",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/tools/ports?search=Oakland",
+          "host": ["{{baseUrl}}"],
+          "path": ["tools", "ports"],
+          "query": [{ "key": "search", "value": "Oakland" }]
+        }
+      }
+    },
+    {
+      "name": "Utility — Zipcode Lookup",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/tools/zipcodes?search=94538",
+          "host": ["{{baseUrl}}"],
+          "path": ["tools", "zipcodes"],
+          "query": [{ "key": "search", "value": "94538" }]
+        }
+      }
+    }
+  ]
+}
