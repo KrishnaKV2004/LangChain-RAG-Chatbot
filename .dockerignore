@@ -1,0 +1,28 @@
+# The local virtualenv is ~1.2 GB and must never enter the build context.
+env/
+.venv/
+venv/
+
+# Runtime state belongs in volumes, not the image (the cache holds the 7L JWT).
+data/
+
+# Dev-only
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+*.py[cod]
+tests/
+legacy/
+docs/
+*.md
+
+# Secrets are injected at runtime via env_file — never baked into a layer.
+.env
+.env.*
+!.env.example
+
+.DS_Store
+.claude/

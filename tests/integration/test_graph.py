@@ -229,16 +229,19 @@ class TestRatesRoute:
         state = run(workflow, "air freight quote SFO to ORD, 200 kg")
         assert state["route"] == "RATES"
         assert service.calls == 1
-        assert [q["carrier_name"] for q in state["rate_quotes"]] == ["FedEx", "UPS"]
+        # Only the cheapest survives to the answer and the table.
+        assert [q["carrier_name"] for q in state["rate_quotes"]] == ["FedEx"]
+        assert state["rate_quotes"][0]["compared"] == 2      # it beat 2 quotes
         answer = state["answer"]
-        # Deterministic, exact figures with an ISO currency code (never "$"), cheapest first.
+        # Deterministic, exact figures with an ISO currency code (never "$").
         assert "LLM SHOULD NOT" not in answer
-        assert "USD 1,200.00" in answer and "USD 1,500.00" in answer
+        assert "USD 1,200.00" in answer
+        assert "UPS" not in answer and "1,500.00" not in answer
         assert "$" not in answer
-        assert answer.index("FedEx") < answer.index("UPS")
-        # Each carrier is credited as a source.
+        assert "source: 7LFreight" in answer
+        # Only the quoted carrier is credited as a source.
         assert {c["title"] for c in state["citations"].external} == {
-            "FedEx live rate (via 7lfreight)", "UPS live rate (via 7lfreight)"
+            "FedEx live rate (via 7lfreight)"
         }
         assert {"rate_extraction_ms", "rate_lookup_ms"} <= set(state["metrics"])
 

@@ -5,7 +5,7 @@ import json
 import pytest
 
 from app.chains.rate_extraction import RateExtractor
-from app.rates.models import RateMode
+from app.rates.models import Location, RateMode
 from tests.unit.test_router_chains import ScriptedChatModel
 
 
@@ -76,6 +76,83 @@ class TestExtraction:
                       items=[{"weight": 10, "length": 40, "width": 40, "height": 40}])
         result = extractor(raw).extract("10 kgs")
         assert result.ok and result.query.mode is RateMode.LTL
+
+
+class TestAddressStandardization:
+    """A partial address is completed from postal data, not re-asked for."""
+
+    @staticmethod
+    def _resolver(**expected):
+        """Stand-in for SevenLRates.resolve_place; records what it was asked."""
+        calls = []
+
+        def resolve(address1=None, address2=None, city=None, state=None, zipcode=None):
+            calls.append({"city": city, "state": state, "zipcode": zipcode})
+            return {"address1": address1, "address2": address2, "city": "Union City",
+                    "state": "CA", "zipcode": "94587", "country": "US"}
+
+        resolve.calls = calls
+        return resolve
+
+    def ltl(self, origin, destination=None, **extra):
+        return payload(
+            mode="ltl",
+            origin=origin,
+            destination=destination or {"city": "Denver", "state": "CO", "zipcode": "80202"},
+            items=[{"weight": 500, "length": 48, "width": 40, "height": 48}],
+            **extra,
+        )
+
+    def test_missing_zip_is_looked_up_not_asked(self) -> None:
+        resolve = self._resolver()
+        result = RateExtractor(
+            ScriptedChatModel(responder=lambda m: self.ltl({"city": "Union City", "state": "CA"})),
+            place_resolver=resolve,
+        ).extract("LTL only, Union City CA to Denver CO, 500 lb 48x40x48")
+        assert result.ok, result.clarification
+        assert result.query.origin.zipcode == "94587"
+        assert resolve.calls[0] == {"city": "Union City", "state": "CA", "zipcode": None}
+
+    def test_complete_address_skips_the_lookup(self) -> None:
+        resolve = self._resolver()
+        RateExtractor(
+            ScriptedChatModel(
+                responder=lambda m: self.ltl(
+                    {"city": "Union City", "state": "CA", "zipcode": "94587"}
+                )
+            ),
+            place_resolver=resolve,
+        ).extract("LTL only")
+        assert resolve.calls == []  # nothing missing → no call spent
+
+    def test_unresolvable_address_still_asks(self) -> None:
+        result = RateExtractor(
+            ScriptedChatModel(responder=lambda m: self.ltl({"city": "Nowheresville"})),
+            place_resolver=lambda **kwargs: None,  # lookup finds nothing
+        ).extract("LTL only from Nowheresville")
+        assert not result.ok
+        assert "zip" in result.clarification.lower()
+
+    def test_resolver_failure_does_not_break_extraction(self) -> None:
+        def boom(**kwargs):
+            raise RuntimeError("7L down")
+
+        result = RateExtractor(
+            ScriptedChatModel(
+                responder=lambda m: self.ltl(
+                    {"city": "Union City", "state": "CA", "zipcode": "94587"}
+                )
+            ),
+            place_resolver=boom,
+        ).extract("LTL only")
+        assert result.ok  # already-complete address is unaffected
+
+    def test_airports_bypass_the_lookup(self) -> None:
+        resolve = self._resolver()
+        result = RateExtractor(
+            ScriptedChatModel(responder=lambda m: payload()), place_resolver=resolve
+        ).extract("air SFO to ORD")
+        assert result.ok and resolve.calls == []
 
 
 class TestClarification:

@@ -152,6 +152,9 @@ class RateLocationRequest(BaseModel):
     state: Optional[str] = Field(default=None, max_length=40)
     zipcode: Optional[str] = Field(default=None, max_length=20)
     country: str = Field(default="US", max_length=3)
+    #: Street line + secondary unit; optional since rating is city/state/zip.
+    address1: Optional[str] = Field(default=None, max_length=200)
+    address2: Optional[str] = Field(default=None, max_length=100)
 
 
 class RateRequest(BaseModel):

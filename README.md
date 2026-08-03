@@ -105,6 +105,41 @@ full list):
 | GET/DELETE | `/cache` | Web-cache stats / clear |
 | GET | `/docs` | Interactive OpenAPI documentation |
 
+## Deployment
+
+```bash
+cp .env.example .env          # fill in keys, and SET API__AUTH_TOKEN
+docker compose up --build     # api :8000, ui :8501
+```
+
+Then index the documents once (the index is not built at boot):
+
+```bash
+docker compose run --rm api python -m app.cli rebuild
+```
+
+One image serves both services; the UI just overrides the command. What the
+compose file gets right, and why each matters:
+
+| Concern | Handling |
+|---|---|
+| **`data/cache` volume** | Holds the 7LFreight JWT. Losing it burns one of the **daily** login quota on every restart. |
+| **`data/chroma` volume** | The vector index — expensive to rebuild. |
+| **Health-check grace** | `start_period=180s`: startup loads the embedding + reranker models. Without it the container is killed mid-boot. |
+| **Auth on `/health`** | Every route is behind `require_auth`, so the health probe sends the bearer token when one is set. |
+| **Model pre-baking** | Models download at *build* time, so start-up is fast and runtime doesn't depend on HuggingFace. |
+| **`.dockerignore`** | Keeps the 1.2 GB local `env/` out of the build context (0.4 MB context). |
+
+Two things to set on whatever sits in front of the API:
+
+- **Read timeout > 60s.** A door-to-door quote makes three live carrier calls
+  (~20–40s). A default 30s proxy timeout will cut quotes off mid-flight.
+- **`API__CORS_ORIGINS`** must list the real UI origin, not `localhost:8501`.
+
+Slim image (no torch, ~600 MB instead of ~3.5 GB) if you use hosted embeddings:
+set `EMBEDDING__PROVIDER=openai` and `RETRIEVAL__RERANK_ENABLED=false`, then
+build with `--build-arg PREFETCH_MODELS=false`.
+
 ## CLI
 
 ```bash

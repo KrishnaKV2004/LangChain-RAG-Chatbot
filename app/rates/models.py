@@ -10,6 +10,18 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+#: The gateway airports the company ships from/to, per
+#: ``documents/Airports.pdf``. A lane must start and end at one of these, so a
+#: city is only quotable through its listed gateway (Anaheim → LAX, not SNA).
+SUPPORTED_AIRPORTS = frozenset(
+    """
+    LAX SFO PDX SEA SLC DEN LAS PHX MSP ORD DFW CVG DTW IAH AUS BWI BOS BNA
+    MEM MKE ATL TPA MCO MIA CLT JFK EWR PHL PIT IAD MCI STL OKC SDF LIT ALB
+    BDL BTV BWM LRD SAT ABQ ELP MSY BHM IND CMH CLE SAV CHS SYR ROC RIC RDU
+    """.split()
+)
+
+
 class RateMode(str, Enum):
     """Which freight service a quote is for (also used in cache keys/logs)."""
 
@@ -75,6 +87,11 @@ class Location:
     state: Optional[str] = None
     zipcode: Optional[str] = None
     country: str = "US"
+    #: Street line and secondary unit (Suite/Apt). Rating is priced on
+    #: city/state/zip, but the street is what a booking and the carrier's
+    #: pickup/delivery stop actually need.
+    address1: Optional[str] = None
+    address2: Optional[str] = None
 
     def label(self) -> str:
         """Short human string for logs, answers and cache keys."""
@@ -84,6 +101,11 @@ class Location:
             return self.port.upper()
         parts = [p for p in (self.city, self.state, self.zipcode) if p]
         return ", ".join(parts) if parts else "unknown"
+
+    def full_address(self) -> str:
+        """Everything known, for display on a quote."""
+        street = " ".join(p for p in (self.address1, self.address2) if p)
+        return ", ".join(p for p in (street, self.label()) if p)
 
 
 @dataclass

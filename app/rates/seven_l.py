@@ -32,7 +32,7 @@ from tenacity import (
 
 from app.cache.ttl_cache import TTLCache
 from app.config.settings import Settings
-from app.rates.models import RateMode, RateQuery, RateQuote, RateResult
+from app.rates.models import Location, RateMode, RateQuery, RateQuote, RateResult
 from app.utils.exceptions import ConfigurationError, RateProviderError
 from app.utils.logging import get_logger
 from app.utils.timing import Timer
@@ -220,6 +220,122 @@ class SevenLRates:
             )
             return []
         return self._parse_quotes(self._flatten_entries(data), query, mode)
+
+    def resolve_place(
+        self,
+        city: Optional[str] = None,
+        state: Optional[str] = None,
+        zipcode: Optional[str] = None,
+    ) -> Optional[Location]:
+        """Standardize a partial US address via ``/tools/zipcodes``.
+
+        Fills in whatever the user left out — a zip from "Union City, CA", or
+        the canonical city/state from a bare "94587" — so a partial address is
+        completed from authoritative data instead of being re-asked for (or
+        guessed at by the LLM).
+
+        Returns ``None`` when nothing matches confidently; the caller then asks.
+        """
+        state = (state or "").strip().upper() or None
+        city = (city or "").strip() or None
+        zipcode = (zipcode or "").strip() or None
+
+        # A zip is the most specific key. City search needs TWO tokens ("Fremont"
+        # alone returns nothing, "Fremont, CA" works), so always pair with state.
+        terms = [zipcode] if zipcode else []
+        if city and state:
+            terms.append(f"{city}, {state}")
+        elif city and " " in city:
+            terms.append(city)  # multi-word city can match on its own
+
+        for term in terms:
+            rows = [
+                row
+                for row in self._zipcode_search(term)
+                if str(row.get("Country", "")).upper() == "US"
+            ]
+            if not rows:
+                continue
+            if zipcode:
+                rows = [r for r in rows if str(r.get("Zipcode", "")).strip() == zipcode] or rows
+            if state:
+                narrowed = [r for r in rows if str(r.get("StateAbbr", "")).upper() == state]
+                if narrowed:
+                    rows = narrowed
+            if city:
+                upper = city.upper()
+                exact = [
+                    r for r in rows
+                    if upper in (str(r.get("City", "")).upper(), str(r.get("CityAlias", "")).upper())
+                ]
+                if exact:
+                    rows = exact
+            # Without a zip or state to pin it down, the same city name in more
+            # than one state is genuinely ambiguous (Union City NJ vs CA) — ask
+            # rather than invent a lane. Several zips within ONE state is fine:
+            # any of them standardizes the city for rating.
+            if not (zipcode or state) and len({str(r.get("StateAbbr", "")).upper() for r in rows}) > 1:
+                continue
+            row = rows[0]
+            return Location(
+                city=str(row.get("City", "")).title() or None,
+                state=str(row.get("StateAbbr", "")).upper() or None,
+                zipcode=str(row.get("Zipcode", "")).strip() or None,
+                country="US",
+            )
+        return None
+
+    def _zipcode_search(self, term: str) -> List[Dict[str, Any]]:
+        """Cached ``/tools/zipcodes`` lookup (postal data barely changes)."""
+        cache_key = f"7l:zip:{term.lower()}"
+        if self._cache is not None:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
+        try:
+            rows = [r for r in self._results(self._get("/tools/zipcodes", {"search": term}))
+                    if isinstance(r, dict)]
+        except RateProviderError as exc:
+            logger.warning("zipcode_lookup_failed", term=term, error=str(exc))
+            return []
+        if self._cache is not None:
+            self._cache.set(cache_key, rows, ttl_seconds=_CARRIER_CACHE_SECONDS)
+        return rows
+
+    def airport_location(self, code: str) -> Optional[Location]:
+        """Resolve an IATA code to a city/state/zip via ``/tools/airports``.
+
+        Needed because the truck legs of a door-to-door quote are priced on
+        city+state+postal code, while the air leg only knows "SFO".
+        """
+        code = code.strip().upper()
+        cache_key = f"7l:airport:{code}"
+        if self._cache is not None:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return Location(**cached)
+        try:
+            data = self._get("/tools/airports", {"search": code})
+        except RateProviderError as exc:
+            logger.warning("airport_lookup_failed", code=code, error=str(exc))
+            return None
+
+        for row in self._results(data):
+            if not isinstance(row, dict) or str(row.get("AirportCode", "")).upper() != code:
+                continue
+            # Name looks like "San Francisco, CA"; Zipcode like "94128".
+            name = str(row.get("Name") or "")
+            city, _, state = name.partition(",")
+            location = Location(
+                city=city.strip() or None,
+                state=state.strip() or None,
+                zipcode=str(row.get("Zipcode") or "").strip() or None,
+                country="US",
+            )
+            if self._cache is not None:
+                self._cache.set(cache_key, location.__dict__, ttl_seconds=_CARRIER_CACHE_SECONDS)
+            return location
+        return None
 
     def _carrier_hashes(self, mode: RateMode) -> List[str]:
         cache_key = f"7l:carriers:{mode.value}"

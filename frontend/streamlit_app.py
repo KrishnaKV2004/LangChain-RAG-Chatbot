@@ -84,7 +84,14 @@ def main() -> None:
             st.dataframe(
                 [
                     {
+                        # Present on door-to-door quotes; blank for single-leg.
+                        "Leg": q.get("leg", ""),
                         "Carrier": q.get("carrier_name"),
+                        # Which rate API this price came from.
+                        "Source": q.get("source")
+                        or {"7lfreight": "7LFreight", "mycarrier": "MyCarrier"}.get(
+                            q.get("provider"), q.get("provider", "")
+                        ),
                         "Mode": q.get("mode"),
                         "Price": f"{q.get('price')} {q.get('currency', '')}".strip(),
                         # Air quotes carry no transit time from 7L — show a dash,

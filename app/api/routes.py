@@ -123,6 +123,8 @@ def _to_location(request: RateLocationRequest) -> Location:
         state=request.state,
         zipcode=request.zipcode,
         country=request.country,
+        address1=request.address1,
+        address2=request.address2,
     )
 
 

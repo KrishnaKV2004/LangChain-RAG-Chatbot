@@ -15,13 +15,13 @@ chosen mode also produce a clarification instead of a doomed API call.
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from app.chains.prompts import RATE_EXTRACTION_SYSTEM_PROMPT
-from app.rates.models import FreightItem, Location, RateMode, RateQuery
+from app.rates.models import SUPPORTED_AIRPORTS, FreightItem, Location, RateMode, RateQuery
 from app.utils.logging import get_logger
 from app.utils.timing import Timer
 
@@ -51,8 +51,11 @@ class RateExtraction:
 class RateExtractor:
     """Extracts a structured rate request with a small LLM."""
 
-    def __init__(self, llm: BaseChatModel) -> None:
+    def __init__(self, llm: BaseChatModel, place_resolver: Optional[Callable] = None) -> None:
         self._llm = llm
+        # Completes partial addresses from authoritative postal data so a
+        # missing zip is looked up rather than asked for (or invented).
+        self._place_resolver = place_resolver
 
     def extract(
         self, query: str, history: Optional[List[Dict[str, str]]] = None
@@ -123,6 +126,11 @@ class RateExtractor:
             hazardous=bool(data.get("hazardous", False)),
         )
 
+        # Standardize before deciding anything is missing: "Union City, CA" with
+        # no zip is completable, not incomplete.
+        query.origin = self._standardize(query.origin)
+        query.destination = self._standardize(query.destination)
+
         missing = self._missing(query)
         ready = bool(data.get("ready", True)) and not missing
         if not ready:
@@ -176,6 +184,47 @@ class RateExtractor:
             state=self._str(data.get("state")),
             zipcode=self._str(data.get("zipcode")),
             country=self._str(data.get("country")) or "US",
+            address1=self._str(data.get("address1")),
+            address2=self._str(data.get("address2")),
+        )
+
+    def _standardize(self, location: Location) -> Location:
+        """Complete a partial city/state/zip from postal data; keep what's given.
+
+        Airports and seaports are already canonical codes, so they pass through.
+        A resolver miss leaves the location untouched — the caller then asks.
+        """
+        if self._place_resolver is None or location.airport or location.port:
+            return location
+        if not (location.city or location.zipcode or location.address1):
+            return location
+        # A street address is always worth standardizing (spelling, unit, zip);
+        # a bare city/state/zip that is already complete is not.
+        if not location.address1 and location.city and location.state and location.zipcode:
+            return location
+        try:
+            resolved = self._place_resolver(
+                address1=location.address1,
+                address2=location.address2,
+                city=location.city,
+                state=location.state,
+                zipcode=location.zipcode,
+            )
+        except Exception as exc:  # noqa: BLE001 — never let lookup break extraction
+            logger.warning("address_standardize_failed", error=str(exc))
+            return location
+        if not resolved:
+            return location
+        # Trust the authoritative record for the canonical form, but never drop
+        # a field the user supplied that the lookup left blank.
+        get = resolved.get if isinstance(resolved, dict) else lambda k: getattr(resolved, k, None)
+        return Location(
+            address1=get("address1") or location.address1,
+            address2=get("address2") or location.address2,
+            city=get("city") or location.city,
+            state=get("state") or location.state,
+            zipcode=get("zipcode") or location.zipcode,
+            country=get("country") or location.country,
         )
 
     def _items(self, raw: Any) -> List[FreightItem]:
@@ -214,6 +263,11 @@ class RateExtractor:
                 missing.append("origin airport")
             if not destination.airport:
                 missing.append("destination airport")
+            # Only the gateways in Airports.pdf are quotable.
+            for location, role in ((origin, "origin"), (destination, "destination")):
+                code = (location.airport or "").upper()
+                if code and code not in SUPPORTED_AIRPORTS:
+                    missing.append(f"a supported {role} gateway airport (we don't ship via {code})")
         elif query.mode is RateMode.OCEAN:
             if not origin.port:
                 missing.append("origin port")

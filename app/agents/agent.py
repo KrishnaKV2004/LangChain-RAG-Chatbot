@@ -21,9 +21,12 @@ from app.database.chroma import ChromaManager
 from app.database.indexer import IndexingService
 from app.embeddings.factory import create_embeddings
 from app.chains.rate_extraction import RateExtractor
+from app.chains.search_query import SearchQueryRefiner
 from app.graph.nodes import GraphNodes
 from app.graph.workflow import build_workflow
 from app.loaders.ingestion import IngestionService
+from app.rates.address import make_address_resolver
+from app.rates.my_carrier import MyCarrierRates
 from app.rates.seven_l import SevenLRates
 from app.retrievers.compression import SentenceCompressor
 from app.retrievers.pipeline import RetrievalPipeline
@@ -169,14 +172,31 @@ def create_agent(settings: Settings) -> HybridRAGAgent:
         rate_cache = TTLCache(settings.cache.path, settings.rates.cache_ttl_seconds)
         rate_service = SevenLRates(settings, rate_cache)
         # Extraction is a cheap structured-output task → the router-tier model.
-        rate_extractor = RateExtractor(create_chat_model(settings, role="router"))
+        # Addresses are standardized after extraction: a street line via the
+        # Census geocoder, otherwise 7L's city/zip lookup.
+        rate_extractor = RateExtractor(
+            create_chat_model(settings, role="router"),
+            place_resolver=make_address_resolver(rate_service.resolve_place, cache=rate_cache),
+        )
         logger.info("rates_enabled")
+
+    # MyCarrier prices the truck legs of a door-to-door air quote. It needs no
+    # credentials (account is identified in the request body), so it is enabled
+    # independently of 7LFreight.
+    my_carrier: Optional[MyCarrierRates] = None
+    if settings.mycarrier.enabled:
+        my_carrier = MyCarrierRates(
+            settings, TTLCache(settings.cache.path, settings.rates.cache_ttl_seconds)
+        )
+        logger.info("mycarrier_enabled", warehouses=str(settings.mycarrier.warehouse_csv))
 
     # ---- Security --------------------------------------------------------- #
     guard = SecurityGuard(settings.security, protected_markers=PROTECTED_MARKERS)
 
     # ---- LLM chains --------------------------------------------------------- #
     router = QueryRouter(create_chat_model(settings, role="router"))
+    # Refines verbose questions into focused web-search queries (router-tier LLM).
+    search_refiner = SearchQueryRefiner(create_chat_model(settings, role="router"))
     answer_llm = create_chat_model(settings, role="answer")
     answer_chain = AnswerChain(answer_llm)
     # Hermes reviews drafts with the same model tier the answers use.
@@ -204,6 +224,9 @@ def create_agent(settings: Settings) -> HybridRAGAgent:
         refiner,
         rate_extractor=rate_extractor,
         rate_service=rate_service,
+        search_refiner=search_refiner,
+        my_carrier=my_carrier,
+        warehouse_csv=str(settings.mycarrier.warehouse_csv),
     )
     workflow = build_workflow(nodes)
 

@@ -17,8 +17,10 @@ from langchain_core.documents import Document
 from app.chains.answer import AnswerChain
 from app.chains.citations import CitationBuilder, Citations
 from app.chains.rate_extraction import RateExtractor
+from app.chains.search_query import SearchQueryRefiner
 from app.graph.state import AgentState
-from app.rates.models import RateQuery, RateQuote
+from app.rates.door_to_door import DoorToDoorPlan, bid, plan_door_to_door, provider_label
+from app.rates.models import RateMode, RateQuery, RateQuote
 from app.retrievers.pipeline import RetrievalPipeline
 from app.routers.classifier import QueryRouter, Route
 from app.search.service import WebSearchService
@@ -30,6 +32,7 @@ from app.utils.timing import Timer
 
 if TYPE_CHECKING:  # imports only for typing — avoid an import cycle / heavy deps
     from app.agents.hermes import HermesRefiner
+    from app.rates.my_carrier import MyCarrierRates
     from app.rates.seven_l import SevenLRates
 
 logger = get_logger(__name__)
@@ -56,6 +59,9 @@ class GraphNodes:
         refiner: "Optional[HermesRefiner]" = None,
         rate_extractor: Optional[RateExtractor] = None,
         rate_service: "Optional[SevenLRates]" = None,
+        search_refiner: Optional[SearchQueryRefiner] = None,
+        my_carrier: "Optional[MyCarrierRates]" = None,
+        warehouse_csv: Optional[str] = None,
     ) -> None:
         self._router = router
         self._retrieval = retrieval
@@ -67,6 +73,11 @@ class GraphNodes:
         # Optional: present only when 7LFreight credentials are configured.
         self._rate_extractor = rate_extractor
         self._rate_service = rate_service
+        # Optional: focuses the web-search query; falls back to raw when absent.
+        self._search_refiner = search_refiner
+        # Truck legs of a door-to-door air quote (MyCarrier + warehouse whitelist).
+        self._my_carrier = my_carrier
+        self._warehouse_csv = warehouse_csv
 
     # ------------------------------------------------------------------ #
     # 1. Input gate — security checkpoint 1
@@ -115,8 +126,14 @@ class GraphNodes:
     # ------------------------------------------------------------------ #
 
     def web_search(self, state: AgentState) -> Dict[str, Any]:
+        # Search the INTENT, not the raw sentence — a verbose question (e.g. one
+        # carrying the user's own origin address) otherwise pollutes the search.
+        query = state["query"]
+        search_query = (
+            self._search_refiner.refine(query) if self._search_refiner is not None else query
+        )
         try:
-            outcome = self._web_search.search(state["query"])
+            outcome = self._web_search.search(search_query)
         except WebSearchError as exc:
             logger.warning("web_search_degraded", error=exc.message)
             return {
@@ -187,6 +204,18 @@ class GraphNodes:
         if query is None or self._rate_service is None:
             return {"rate_docs": [], "rate_quotes": [],
                     "answer": "I couldn't parse a shippable request from that."}
+
+        # An air lane is really door-to-door: truck to the airport, fly, truck
+        # onward. Price all three and total them.
+        if query.mode is RateMode.AIR and self._my_carrier is not None:
+            return self._fetch_door_to_door(state, query)
+
+        # An explicit LTL-only lane can be priced by both providers, so let them
+        # compete rather than defaulting to one.
+        if query.mode is RateMode.LTL and self._my_carrier is not None:
+            quotes = bid(query, [self._rate_service, self._my_carrier])
+            return self._single_leg_result(state, query, quotes, latency_ms=0.0)
+
         try:
             outcome = self._rate_service.get_rates(query)
         except RateProviderError as exc:
@@ -205,12 +234,80 @@ class GraphNodes:
                 "answer": message,
                 "metrics": _metrics(state, "rate_lookup_ms", 0.0),
             }
+        return self._single_leg_result(state, query, outcome.quotes, outcome.latency_ms)
+
+    def _single_leg_result(
+        self, state: AgentState, query: "RateQuery", quotes: List[RateQuote], latency_ms: float
+    ) -> Dict[str, Any]:
+        """Ship only the cheapest quote — the rest were just the comparison pool."""
+        best = [min(quotes, key=lambda q: q.price)] if quotes else []
         return {
-            "rate_docs": [self._rate_document(quote) for quote in outcome.quotes],
-            "rate_quotes": [quote.to_dict() for quote in outcome.quotes],
-            "answer": self._format_rate_answer(query, outcome.quotes),
-            "metrics": _metrics(state, "rate_lookup_ms", outcome.latency_ms),
+            "rate_docs": [self._rate_document(quote) for quote in best],
+            "rate_quotes": [
+                {**quote.to_dict(), "source": provider_label(quote.provider),
+                 "compared": len(quotes)}
+                for quote in best
+            ],
+            "answer": self._format_rate_answer(query, quotes),
+            "metrics": _metrics(state, "rate_lookup_ms", latency_ms),
         }
+
+    def _fetch_door_to_door(self, state: AgentState, query: "RateQuery") -> Dict[str, Any]:
+        """Price truck + air + truck and total it."""
+        with Timer() as timer:
+            plan = plan_door_to_door(
+                query, self._rate_service, self._my_carrier, self._warehouse_csv or ""
+            )
+        quotes = [leg.quote for leg in plan.priced]
+        return {
+            "rate_docs": [self._rate_document(quote) for quote in quotes],
+            "rate_quotes": [
+                {**leg.quote.to_dict(), "leg": leg.label, "source": leg.source,
+                 "compared": leg.compared}
+                for leg in plan.priced
+            ],
+            "answer": self._format_door_to_door(query, plan),
+            "metrics": _metrics(state, "rate_lookup_ms", timer.elapsed_ms),
+        }
+
+    @classmethod
+    def _format_door_to_door(cls, query: "RateQuery", plan: DoorToDoorPlan) -> str:
+        lane = cls._lane(query)
+        if not plan.priced:
+            reasons = {leg.note for leg in plan.legs if leg.note}
+            detail = f" ({'; '.join(sorted(reasons))})" if reasons else ""
+            return (
+                f"I couldn't price any leg of {lane} right now{detail}. "
+                "I won't guess at a price."
+            )
+
+        lines = [f"Door-to-door estimate for {lane}:", ""]
+        for leg in plan.legs:
+            if leg.quote is None:
+                lines.append(f"- {leg.label}: not priced — {leg.note}")
+                continue
+            quote = leg.quote
+            # Name the rate's source, and say what it was chosen over so the
+            # price is auditable rather than a bare number.
+            compared = (
+                f", cheapest of {leg.compared} via {' + '.join(leg.providers)}"
+                if leg.compared > 1
+                else ""
+            )
+            lines.append(
+                f"- {leg.label}: {quote.carrier_name} — "
+                f"{quote.currency} {quote.price:,.2f}{cls._transit(quote.transit_days)}  "
+                f"_[source: {leg.source}{compared}]_"
+            )
+        lines.append("")
+        label = "Total" if plan.complete else "Subtotal (priced legs only)"
+        lines.append(f"**{label}: {plan.currency} {plan.total:,.2f}**")
+        if not plan.complete:
+            lines.append(
+                "One or more legs couldn't be priced, so this is not the full "
+                "door-to-door cost."
+            )
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
     # Deterministic rate presentation (no LLM → exact figures, no estimates)
@@ -226,15 +323,36 @@ class GraphNodes:
                 "Please double-check the origin, destination and weight — or try again "
                 "shortly, as carriers don't always return a rate for every lane."
             )
-        lines = [f"Here are the live {mode} freight quotes for {lane}, cheapest first:", ""]
-        for quote in quotes:  # already sorted cheapest-first by the service
-            code = f" ({quote.carrier_code})" if quote.carrier_code else ""
-            # Currency as an ISO code ("USD 1,200.00"), never a "$" — a bare "$"
-            # is rendered as broken LaTeX math by the markdown chat UI.
-            price = f"{quote.currency} {quote.price:,.2f}"
-            transit = f" · about {quote.transit_days} days" if quote.transit_days is not None else ""
-            lines.append(f"- {quote.carrier_name}{code}: {price}{transit}")
+        # Only the cheapest option is shown; the pool it beat is named so the
+        # price stays auditable. Currency as an ISO code ("USD 1,200.00"), never
+        # "$" — a bare "$" renders as broken LaTeX in the markdown chat UI.
+        best = min(quotes, key=lambda q: q.price)
+        code = f" ({best.carrier_code})" if best.carrier_code else ""
+        sources = " + ".join(sorted({provider_label(q.provider) for q in quotes}))
+        compared = f", cheapest of {len(quotes)}" if len(quotes) > 1 else ""
+        lines = [
+            f"Cheapest live {mode} freight for {lane}: **{best.carrier_name}{code} — "
+            f"{best.currency} {best.price:,.2f}**{cls._transit(best.transit_days)}  "
+            f"_[source: {sources}{compared}]_"
+        ]
+        # Echo the standardized street addresses so the user can confirm what
+        # will actually be picked up from / delivered to.
+        lines.extend(cls._address_lines(query))
         return "\n".join(lines)
+
+    @staticmethod
+    def _address_lines(query: "RateQuery") -> List[str]:
+        """Confirm the corrected pickup/delivery addresses when a street is known."""
+        rows = [
+            (label, location)
+            for label, location in (("Pickup", query.origin), ("Delivery", query.destination))
+            if location.address1
+        ]
+        if not rows:
+            return []
+        return ["", "Verified addresses:"] + [
+            f"- {label}: {location.full_address()}" for label, location in rows
+        ]
 
     @classmethod
     def _rate_unavailable_message(cls, query: "RateQuery") -> str:
@@ -258,6 +376,12 @@ class GraphNodes:
     @staticmethod
     def _lane(query: "RateQuery") -> str:
         return f"{query.origin.label()} → {query.destination.label()}"
+
+    @staticmethod
+    def _transit(days: Optional[int]) -> str:
+        if days is None:
+            return ""
+        return f" · about {days} day{'' if days == 1 else 's'}"
 
     @staticmethod
     def _rate_document(quote: RateQuote) -> Document:

@@ -37,6 +37,34 @@ class FakeSevenL:
         self.air_status = 200                 # terminal air status
         self.air_body = None                  # override air response body
         self.unauthorized_first_air = False   # emit one 401 then succeed
+        # /tools/zipcodes fixtures, keyed by search term (real shapes).
+        self.zipcodes = {
+            "Union City, CA": [
+                {"City": "UNION CITY", "CityAlias": "UNION CITY", "StateAbbr": "CA",
+                 "Zipcode": "94587", "Country": "US"},
+            ],
+            "94587": [
+                {"City": "UNION CITY", "CityAlias": "UNION CITY", "StateAbbr": "CA",
+                 "Zipcode": "94587", "Country": "US"},
+                {"City": "CORDOBA", "CityAlias": "CORDOBA", "StateAbbr": "VE",
+                 "Zipcode": "94587", "Country": "MX"},   # must be filtered out
+            ],
+            "Union City, NJ": [
+                {"City": "UNION CITY", "CityAlias": "UNION CITY", "StateAbbr": "NJ",
+                 "Zipcode": "07087", "Country": "US"},
+            ],
+            "Union City": [
+                {"City": "UNION CITY", "StateAbbr": "NJ", "Zipcode": "07087", "Country": "US"},
+                {"City": "UNION CITY", "StateAbbr": "CA", "Zipcode": "94587", "Country": "US"},
+            ],
+            # Several zips within ONE state — standardizing to any is correct.
+            "Fremont, CA": [
+                {"City": "FREMONT", "CityAlias": "FREMONT", "StateAbbr": "CA",
+                 "Zipcode": "94536", "Country": "US"},
+                {"City": "FREMONT", "CityAlias": "FREMONT", "StateAbbr": "CA",
+                 "Zipcode": "94538", "Country": "US"},
+            ],
+        }
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -78,6 +106,9 @@ class FakeSevenL:
                     }
                 },
             )
+        if path.endswith("/tools/zipcodes"):
+            term = request.url.params.get("search", "")
+            return httpx.Response(200, json={"data": {"results": self.zipcodes.get(term, [])}})
         if path.endswith("/database/ltlaccount"):
             return httpx.Response(200, json={"data": {"results": [
                 {"CarrierHash": "h1", "Name": "C1"}, {"CarrierHash": "h2", "Name": "C2"}]}})
@@ -169,6 +200,48 @@ class TestAuth:
             make_client(settings, server).get_rates(air_query())
         # Marked as auth so callers don't tell the user to "try again".
         assert excinfo.value.details.get("kind") == "auth"
+
+
+class TestAddressResolution:
+    """resolve_place() completes a partial US address from postal data."""
+
+    def test_city_and_state_yields_zip(self, settings: Settings) -> None:
+        place = make_client(settings, FakeSevenL()).resolve_place(city="Union City", state="CA")
+        assert (place.city, place.state, place.zipcode) == ("Union City", "CA", "94587")
+
+    def test_zip_yields_canonical_city_and_state(self, settings: Settings) -> None:
+        place = make_client(settings, FakeSevenL()).resolve_place(zipcode="94587")
+        assert (place.city, place.state) == ("Union City", "CA")
+
+    def test_non_us_rows_are_ignored(self, settings: Settings) -> None:
+        # 94587 also matches a Mexican row; it must never be chosen.
+        place = make_client(settings, FakeSevenL()).resolve_place(zipcode="94587")
+        assert place.country == "US" and place.state == "CA"
+
+    def test_state_disambiguates_a_shared_city_name(self, settings: Settings) -> None:
+        place = make_client(settings, FakeSevenL()).resolve_place(city="Union City", state="NJ")
+        assert place.zipcode == "07087"
+
+    def test_ambiguous_city_without_state_is_not_guessed(self, settings: Settings) -> None:
+        # "Union City" exists in NJ and CA — picking one would invent a lane.
+        assert make_client(settings, FakeSevenL()).resolve_place(city="Union City") is None
+
+    def test_multiple_zips_in_one_state_is_not_ambiguous(self, settings: Settings) -> None:
+        # Fremont CA spans several zips; any of them standardizes the city.
+        place = make_client(settings, FakeSevenL()).resolve_place(city="Fremont", state="CA")
+        assert place.city == "Fremont" and place.zipcode in {"94536", "94538"}
+
+    def test_unknown_place_returns_none(self, settings: Settings) -> None:
+        assert make_client(settings, FakeSevenL()).resolve_place(
+            city="Nowheresville", state="ZZ"
+        ) is None
+
+    def test_lookup_is_cached(self, settings: Settings, tmp_path: Path) -> None:
+        server = FakeSevenL()
+        client = make_client(settings, server, TTLCache(tmp_path / "c", 3600))
+        client.resolve_place(city="Union City", state="CA")
+        client.resolve_place(city="Union City", state="CA")
+        assert sum(c.endswith("/tools/zipcodes") for c in server.calls) == 1
 
 
 # --------------------------------------------------------------------------- #

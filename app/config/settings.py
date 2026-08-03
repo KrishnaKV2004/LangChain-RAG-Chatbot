@@ -194,6 +194,24 @@ class RatesSettings(BaseModel):
     max_carriers_returned: int = Field(default=5, gt=0, le=20)
 
 
+class MyCarrierSettings(BaseModel):
+    """MyCarrier LTL rating.
+
+    Unlike 7LFreight there is no login/token: the account is identified by
+    ``customer_email`` + ``location_id`` inside the request body.
+    """
+
+    enabled: bool = True
+    base_url: str = "https://app-integration-prod-api.azurewebsites.net"
+    customer_name: str = "New Mission"
+    customer_email: str = "Monika@sky2c.com"
+    location_id: str = "4423688"
+    # Rating fans out to ~40 carriers, so it is slower than a single-carrier call.
+    timeout_seconds: int = Field(default=90, gt=0)
+    #: CSV of LTL-supported warehouses — the allowed truck-leg endpoints.
+    warehouse_csv: Path = Path("documents/Warehouses.csv")
+
+
 class HermesSettings(BaseModel):
     """Hermes — the self-refinement agent that reviews and improves draft
     answers (quality, faithfulness, human tone) before they leave the system."""
@@ -286,6 +304,7 @@ class Settings(BaseSettings):
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     rates: RatesSettings = Field(default_factory=RatesSettings)
+    mycarrier: MyCarrierSettings = Field(default_factory=MyCarrierSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     hermes: HermesSettings = Field(default_factory=HermesSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
