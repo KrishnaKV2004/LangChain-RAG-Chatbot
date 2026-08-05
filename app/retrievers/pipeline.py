@@ -17,6 +17,7 @@ Only stage 1 touches the vector database; everything downstream is pure
 in-process computation, which keeps the pipeline easy to unit test.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 from app.config.settings import RetrievalSettings
@@ -29,6 +30,10 @@ from app.utils.logging import get_logger
 from app.utils.timing import Timer
 
 logger = get_logger(__name__)
+
+#: When a query names one document, return up to this many of its chunks so the
+#: whole record is in context. Bounds the prompt for a large file.
+_SCOPED_MAX_CHUNKS = 25
 
 
 class RetrievalPipeline:
@@ -59,6 +64,19 @@ class RetrievalPipeline:
         final_k = top_k or settings.top_k
         result = RetrievalResult()
 
+        # An explicit document reference ("ticket 1160") is an EXACT lookup.
+        # Embeddings can't tell 1160 from 1161 — the vectors are nearly
+        # identical — so scope the search to that file instead of hoping
+        # similarity picks the right one.
+        scoped_filter = self._document_filter(query) if metadata_filter is None else None
+        if scoped_filter is not None:
+            metadata_filter = scoped_filter
+            # The named document IS the answer scope, so hand the LLM all of it
+            # rather than the top few chunks — the detail asked for (a drop
+            # address on page 1) is often not the chunk that ranks highest for
+            # the question's wording.
+            final_k = max(final_k, _SCOPED_MAX_CHUNKS)
+
         with Timer() as timer:
             try:
                 scored = self._search_with_scores(query, metadata_filter)
@@ -83,7 +101,9 @@ class RetrievalPipeline:
                     doc.metadata.get("chunk_id"): score for doc, score in scored
                 }
                 ranked = self._reranker.rerank(query, [doc for doc, _ in scored])
-                ranked = ranked[: settings.rerank_top_k]
+                # Rerank orders the chunks; only trim when we are NOT answering
+                # from one explicitly-named document.
+                ranked = ranked[: max(settings.rerank_top_k, final_k)]
                 chunks = [
                     RetrievedChunk(
                         document=doc,
@@ -122,6 +142,33 @@ class RetrievalPipeline:
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
+
+    def _document_filter(self, query: str) -> Optional[Dict[str, Any]]:
+        """Scope the search to a document the query names explicitly.
+
+        Matches an identifier in the query (``ticket 1160``, ``Ticket-1160``,
+        ``invoice #4471``) against the indexed filenames. Returns ``None`` when
+        the query names nothing, or names something not in the index — in which
+        case normal semantic search runs and the answer honestly reports what it
+        found.
+        """
+        numbers = set(re.findall(r"\d{3,}", query))
+        if not numbers:
+            return None
+        try:
+            filenames = list(self._manager.stats().get("documents_by_file", {}))
+        except Exception as exc:  # noqa: BLE001 — never let this break retrieval
+            logger.debug("document_filter_stats_failed", error=str(exc))
+            return None
+
+        matches = sorted(
+            {name for name in filenames if any(number in name for number in numbers)}
+        )
+        if not matches:
+            return None
+        logger.info("retrieval_scoped_to_documents", files=matches)
+        # Chroma wants $in for a set, a bare value for one.
+        return {"filename": matches[0] if len(matches) == 1 else {"$in": matches}}
 
     def _search_with_scores(
         self, query: str, metadata_filter: Optional[Dict[str, Any]]

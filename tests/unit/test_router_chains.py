@@ -203,6 +203,21 @@ class TestAnswerExtraction:
 
         assert extract_final_answer("Plain reply.") == "Plain reply."
 
+    def test_thinking_only_reply_never_leaks_reasoning(self) -> None:
+        """A model that burns its whole budget deliberating must not have its
+        chain-of-thought shown to the user."""
+        from app.chains.answer import extract_final_answer
+
+        raw = (
+            "<thinking>The user asks for source and destination. Document D8 says "
+            "Drop Location: Roadsprint... Let me re-evaluate. Michael Brown's email "
+            "suggests Atlanta. However the question is about the shipment"
+        )
+        answer = extract_final_answer(raw)
+        assert "<thinking>" not in answer
+        assert "Roadsprint" not in answer and "Michael Brown" not in answer
+        assert "ran out of room" in answer
+
     def test_chain_returns_extracted_answer(self) -> None:
         chain = AnswerChain(
             scripted("<thinking>hmm, alternatives...</thinking><answer>LAX.</answer>")

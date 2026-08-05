@@ -4,16 +4,25 @@ The frontend never imports application code — it talks to the API over HTTP
 exactly like any other client would, so the two processes can be deployed
 and scaled independently.
 
-Configuration (environment variables):
+Configuration (environment variables, also read from ``.env``):
 
 * ``RAG_API_URL``   — backend base URL (default ``http://localhost:8000``)
-* ``RAG_API_TOKEN`` — bearer token, required only when the API enforces auth
+* ``RAG_API_TOKEN`` — bearer token, required only when the API enforces auth.
+  Falls back to ``API__AUTH_TOKEN`` so the backend's own setting is the single
+  source of truth and a locally-run UI doesn't 401 the moment auth is enabled.
 """
 
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
+from dotenv import load_dotenv
+
+# The UI runs as its own process, so nothing has loaded .env for it. Without
+# this, enabling API__AUTH_TOKEN makes every request 401 until the operator
+# happens to export the token by hand.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 class APIError(Exception):
@@ -30,7 +39,7 @@ class RAGAPIClient:
         timeout: float = 120.0,
     ) -> None:
         self._base_url = (base_url or os.getenv("RAG_API_URL", "http://localhost:8000")).rstrip("/")
-        self._token = token or os.getenv("RAG_API_TOKEN")
+        self._token = token or os.getenv("RAG_API_TOKEN") or os.getenv("API__AUTH_TOKEN")
         self._timeout = timeout
 
     # ------------------------------------------------------------------ #

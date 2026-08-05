@@ -17,6 +17,7 @@ Every chunk receives:
 """
 
 import hashlib
+import re
 import uuid
 from typing import List
 
@@ -70,6 +71,7 @@ class DocumentChunker:
         for index, chunk in enumerate(chunks):
             chunk.metadata["chunk_index"] = index
             chunk.metadata["chunk_id"] = self._chunk_id(chunk, index)
+            chunk.page_content = self._with_source_header(chunk)
 
         logger.debug("chunking_complete", input_docs=len(documents), chunks=len(chunks))
         return chunks
@@ -88,6 +90,34 @@ class DocumentChunker:
             section_doc = Document(page_content=section.page_content, metadata=merged)
             result.extend(self._recursive.split_documents([section_doc]))
         return result
+
+    @staticmethod
+    def _with_source_header(chunk: Document) -> str:
+        """Prefix the chunk with the document it came from.
+
+        Identifiers frequently live only in the FILENAME — "Ticket-1160.pdf"
+        never repeats "1160" in its body, it uses an internal Zoho id. Because
+        only ``page_content`` is embedded, a question like "source and
+        destination for ticket 1160" had nothing to match and retrieved a
+        different ticket. Embedding the filename fixes that for every document
+        whose name carries meaning (tickets, invoices, BOLs, dated reports).
+        """
+        meta = chunk.metadata
+        filename = meta.get("filename")
+        if not filename:
+            return chunk.page_content
+        header = f"[Source: {filename}"
+        # The stem alone ("Ticket-1160" → "Ticket 1160") so a spaced or
+        # punctuation-free phrasing of the identifier matches too.
+        stem = re.sub(r"\.[A-Za-z0-9]+$", "", str(filename))
+        spaced = re.sub(r"[-_]+", " ", stem)
+        if spaced != stem:
+            header += f" | {spaced}"
+        if meta.get("page") is not None:
+            header += f" | page {meta['page']}"
+        if meta.get("section_title"):
+            header += f" | {meta['section_title']}"
+        return f"{header}]\n{chunk.page_content}"
 
     @staticmethod
     def _chunk_id(chunk: Document, index: int) -> str:

@@ -28,6 +28,13 @@ logger = get_logger(__name__)
 #: History beyond this many messages is dropped (oldest first) to bound cost.
 _MAX_HISTORY_MESSAGES = 10
 
+#: Shown when the model spent its whole output budget deliberating. Raising
+#: ``LLM__MAX_TOKENS`` is the real cure for a verbose reasoning model.
+_TRUNCATED_MESSAGE = (
+    "I ran out of room working that one out. Could you ask again a little more "
+    "specifically — for example, naming the exact field you need?"
+)
+
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.S | re.I)
 # Matches a thinking block even when truncation cut off its closing tag.
 _THINKING_RE = re.compile(r"<thinking>.*?(?:</thinking>|$)", re.S | re.I)
@@ -84,7 +91,16 @@ def extract_final_answer(text: str) -> str:
     if match:
         return match.group(1).strip()
     stripped = _THINKING_RE.sub("", text).replace("<answer>", "").strip()
-    return stripped or text.strip()
+    if stripped:
+        return stripped
+    if _THINKING_RE.search(text):
+        # The reply is ONLY deliberation — the model ran out of output tokens
+        # before writing its answer. Raw chain-of-thought must never reach the
+        # user (it exposes internal reasoning and half-formed conclusions), so
+        # say what happened instead of dumping it.
+        logger.warning("answer_truncated_in_thinking", chars=len(text))
+        return _TRUNCATED_MESSAGE
+    return text.strip()
 
 
 @dataclass

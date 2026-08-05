@@ -37,7 +37,11 @@ _FILENAME_CONFIDENTIAL: Pattern[str] = re.compile(
 #: prose is weighed by banner style, not topic.
 _CONTENT_CONFIDENTIAL: List[Pattern[str]] = [
     re.compile(r"\bstrictly\s+confidential\b", re.I),
-    re.compile(r"^\s*confidential\b", re.I | re.M),           # banner line
+    # A real banner is a SHORT STANDALONE line ("CONFIDENTIAL", "Confidential —
+    # Internal"), not the start of a wrapped sentence. Without the end anchor
+    # this matched every disclaimer whose line-wrap happened to begin with
+    # "confidential, proprietary, or legally privileged information."
+    re.compile(r"^[\s\-*=]*confidential\b[^.!?\n]{0,24}$", re.I | re.M),
     re.compile(r"\binternal\s+use\s+only\b", re.I),
     re.compile(r"\bdo\s+not\s+(distribute|share|forward)\b", re.I),
     re.compile(r"\bproprietary\s+(and|&)\s+confidential\b", re.I),
@@ -70,7 +74,9 @@ class SensitivityClassifier:
         if _FILENAME_CONFIDENTIAL.search(meta.get("filename", "")):
             return SensitivityLevel.CONFIDENTIAL
 
-        # 3) Content banners.
+        # 3) Content banners. The whole text is scanned — a boilerplate email
+        # disclaimer no longer trips this because a banner must be a short
+        # standalone line, which a wrapped legal sentence never is.
         for pattern in _CONTENT_CONFIDENTIAL:
             if pattern.search(document.page_content):
                 return SensitivityLevel.CONFIDENTIAL
